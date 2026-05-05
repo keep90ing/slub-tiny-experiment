@@ -21,9 +21,10 @@ initromfs:
 	mkdir -p rootfs/lib
 	mkdir -p rootfs/proc
 	mkdir -p rootfs/root
+	mkdir -p rootfs/usr
 	mv init/init rootfs
-	cp -a -d $(BUILDROOT_DIR)/output/target/lib/* rootfs/lib
-	cp -a -d $(BUILDROOT_DIR)/output/target/usr/lib/* rootfs/lib
+	cp -a -d $(BUILDROOT_DIR)/output/target/lib/*libc* rootfs/lib
+# 	cp -a -d $(BUILDROOT_DIR)/output/target/usr/lib/* rootfs/lib
 	$(BUILDROOT_DIR)/output/host/bin/genromfs -d rootfs -f $(BUILDROOT_DIR)/output/images/rootfs.romfs
 
 build:
@@ -32,6 +33,9 @@ build:
 
 linux-rebuild:
 	make -C $(BUILDROOT_DIR) linux-rebuild -j`nproc`
+
+linux-menuconfig:
+	make -C $(BUILDROOT_DIR) linux-menuconfig
 
 flash:
 	$(BUILDROOT_DIR)/board/stmicroelectronics/stm32f429-disco/flash.sh $(BUILDROOT_DIR)/output stm32f429discovery
