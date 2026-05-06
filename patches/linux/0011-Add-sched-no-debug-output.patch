@@ -1,0 +1,77 @@
+From 00d100ec14651a01359e27b1b58bb8a2b88d6122 Mon Sep 17 00:00:00 2001
+From: Chisheng Chen <johnny1001s000602@gmail.com>
+Date: Wed, 6 May 2026 19:05:19 +0800
+Subject: [PATCH 11/11] Add sched no debug output
+
+---
+ init/Kconfig         | 14 ++++++++++++++
+ kernel/sched/debug.c | 24 ++++++++++++++++++++++++
+ 2 files changed, 38 insertions(+)
+
+diff --git a/init/Kconfig b/init/Kconfig
+index 639497031..2df9cb397 100644
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -933,6 +933,20 @@ config SCHED_PROXY_EXEC
+ 	  This option enables proxy execution, a mechanism for mutex-owning
+ 	  tasks to inherit the scheduling context of higher priority waiters.
+ 
++config SCHED_DEBUG_OUTPUT
++	bool "Scheduler debug/output paths"
++	default y
++	help
++	  Build kernel/sched/debug.c, which provides /proc/<pid>/sched,
++	  /sys/kernel/debug/sched/* (when DEBUG_FS=y), the sysrq scheduler
++	  dump, and the print_cfs_rq / print_rt_rq / print_dl_rq /
++	  print_numa_stats formatters.
++
++	  Say N on size-constrained NOMMU images that never read
++	  /proc/<pid>/sched and have no debugfs sched-domain consumer.
++	  Boot-path callers become no-ops; OOPS/panic backtraces are
++	  unaffected (sched_show_task lives in core.c).
++
+ endmenu
+ 
+ #
+diff --git a/kernel/sched/debug.c b/kernel/sched/debug.c
+index 15bf45b6f..4feeba82b 100644
+--- a/kernel/sched/debug.c
++++ b/kernel/sched/debug.c
+@@ -10,6 +10,8 @@
+ #include <linux/nmi.h>
+ #include "sched.h"
+ 
++#ifdef CONFIG_SCHED_DEBUG_OUTPUT
++
+ /*
+  * This allows printing both to /sys/kernel/debug/sched/debug and
+  * to the console
+@@ -1389,3 +1391,25 @@ void resched_latency_warn(int cpu, u64 latency)
+ 	       cpu, latency, cpu_rq(cpu)->ticks_without_resched);
+ 	dump_stack();
+ }
++
++#else /* !CONFIG_SCHED_DEBUG_OUTPUT */
++
++__read_mostly bool sched_debug_verbose;
++
++void sysrq_sched_debug_show(void) { }
++void resched_latency_warn(int cpu, u64 latency) { }
++void print_cfs_rq(struct seq_file *m, int cpu, struct cfs_rq *cfs_rq) { }
++void print_rt_rq(struct seq_file *m, int cpu, struct rt_rq *rt_rq) { }
++void print_dl_rq(struct seq_file *m, int cpu, struct dl_rq *dl_rq) { }
++#ifdef CONFIG_NUMA_BALANCING
++void print_numa_stats(struct seq_file *m, int node, unsigned long tsf,
++		      unsigned long tpf, unsigned long gsf, unsigned long gpf)
++{ }
++#endif
++void proc_sched_show_task(struct task_struct *p, struct pid_namespace *ns,
++			  struct seq_file *m) { }
++void proc_sched_set_task(struct task_struct *p) { }
++void update_sched_domain_debugfs(void) { }
++void dirty_sched_domain_sysctl(int cpu) { }
++
++#endif /* CONFIG_SCHED_DEBUG_OUTPUT */
+-- 
+2.43.0
+
