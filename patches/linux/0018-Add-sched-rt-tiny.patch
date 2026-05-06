@@ -1,0 +1,288 @@
+From a47ec6f6a8d2e312850749bbd80adec3fe476a6a Mon Sep 17 00:00:00 2001
+From: Chisheng Chen <johnny1001s000602@gmail.com>
+Date: Thu, 7 May 2026 00:57:12 +0800
+Subject: [PATCH 18/19] Add sched rt tiny
+
+---
+ init/Kconfig      |  29 ++++++
+ kernel/sched/rt.c | 220 ++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 249 insertions(+)
+
+diff --git a/init/Kconfig b/init/Kconfig
+index ea2f26a87..4dd0532e6 100644
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -1075,6 +1075,35 @@ config SCHED_PELT_RT_MINI
+ 
+ 	  Say N unless you are building a heavily size-constrained image.
+ 
++config SCHED_RT_TINY
++	bool "Compact fixed-priority FIFO replacement for rt_sched_class"
++	default n
++	help
++	  Replace kernel/sched/rt.c with a minimal fixed-priority FIFO
++	  class.  Drops:
++
++	    - SCHED_RR round-robin slice accounting (RR collapses to FIFO)
++	    - RT bandwidth period/runtime limiter and the period hrtimer
++	    - RT throttle / rt_rq_throttled
++	    - Push/pull migration glue (UP makes the entire surface dead)
++	    - cpupri-driven find_lowest_rq target selection
++	    - sched_rt_handler / sched_rr_handler sysctl writers
++
++	  Keeps the priority-bitmap + per-priority FIFO list data
++	  structure unchanged (rt_rq->active.bitmap +
++	  rt_rq->active.queue[]); enqueue / dequeue / pick are O(1).
++	  RT > fair preemption still works through the existing
++	  class-chain walk; cross-RT-priority preemption uses
++	  resched_curr at wakeup.
++
++	  Designed for size-constrained NOMMU images that ship no `chrt`
++	  applet and where SCHED_RR vs SCHED_FIFO has no userspace
++	  consumer.  Re-enabling RT bandwidth, RT_GROUP_SCHED, SMP, or
++	  any RT-aware workload requires reverting this knob.
++
++	  Say N unless you are building a heavily size-constrained image.
++	  Boot test before deploying.
++
+ endmenu
+ 
+ #
+diff --git a/kernel/sched/rt.c b/kernel/sched/rt.c
+index f69e1f16d..4f928581a 100644
+--- a/kernel/sched/rt.c
++++ b/kernel/sched/rt.c
+@@ -7,6 +7,8 @@
+ #include "sched.h"
+ #include "pelt.h"
+ 
++#ifndef CONFIG_SCHED_RT_TINY
++
+ int sched_rr_timeslice = RR_TIMESLICE;
+ /* More than 4 hours if BW_SHIFT equals 20. */
+ static const u64 max_rt_runtime = MAX_BW;
+@@ -2949,3 +2951,221 @@ void print_rt_stats(struct seq_file *m, int cpu)
+ 		print_rt_rq(m, cpu, rt_rq);
+ 	rcu_read_unlock();
+ }
++
++#else /* CONFIG_SCHED_RT_TINY */
++
++#include <linux/bitmap.h>
++#include <linux/list.h>
++#include <linux/plist.h>
++#include <linux/sched/prio.h>
++#include <linux/sched/rt.h>
++
++/*
++ * Tiny fixed-priority FIFO RT class.  Three operations are O(1):
++ *
++ *   pick    -> find_first_bit(bitmap, MAX_RT_PRIO) + list_first_entry
++ *   enqueue -> list_add_tail + __set_bit
++ *   dequeue -> list_del_init + __clear_bit if queue empties
++ *
++ * No RR slice rotation, no throttle, no bandwidth, no push/pull, no
++ * cpupri.  Cross-priority preemption fires at wakeup via resched_curr;
++ * RT > fair preemption stays handled by the class-chain walk in
++ * pick_next_task_balance.  See SCHED_RT_TINY help in init/Kconfig
++ * for the full rationale.
++ */
++
++/* Sysctl tunables that core.c / build_utility.c reference at init. */
++int sched_rr_timeslice = RR_TIMESLICE;
++int sysctl_sched_rt_period = 1000000;
++int sysctl_sched_rt_runtime = 950000;
++
++void init_rt_rq(struct rt_rq *rt_rq)
++{
++	struct rt_prio_array *array = &rt_rq->active;
++	int i;
++
++	for (i = 0; i < MAX_RT_PRIO; i++) {
++		INIT_LIST_HEAD(array->queue + i);
++		__clear_bit(i, array->bitmap);
++	}
++	/* Delimiter for bitsearch: */
++	__set_bit(MAX_RT_PRIO, array->bitmap);
++
++	rt_rq->rt_nr_running = 0;
++	rt_rq->rr_nr_running = 0;
++	rt_rq->highest_prio.curr = MAX_RT_PRIO - 1;
++	rt_rq->highest_prio.next = MAX_RT_PRIO - 1;
++	rt_rq->overloaded = false;
++	plist_head_init(&rt_rq->pushable_tasks);
++	rt_rq->rt_queued = 0;
++}
++
++void init_rt_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtime) { }
++void __init init_sched_rt_class(void) { }
++
++/* sched_class methods --------------------------------------------------- */
++
++static void enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags)
++{
++	struct rt_rq *rt_rq = &rq->rt;
++	struct sched_rt_entity *rt_se = &p->rt;
++	int prio = p->prio;
++
++	if (rt_se->on_rq)
++		return;
++
++	list_add_tail(&rt_se->run_list, &rt_rq->active.queue[prio]);
++	__set_bit(prio, rt_rq->active.bitmap);
++	rt_rq->rt_nr_running++;
++	if (prio < rt_rq->highest_prio.curr)
++		rt_rq->highest_prio.curr = prio;
++	rt_rq->rt_queued = 1;
++	add_nr_running(rq, 1);
++	rt_se->on_rq = 1;
++}
++
++static bool dequeue_task_rt(struct rq *rq, struct task_struct *p, int flags)
++{
++	struct rt_rq *rt_rq = &rq->rt;
++	struct sched_rt_entity *rt_se = &p->rt;
++	int prio = p->prio;
++	int next_prio;
++
++	if (!rt_se->on_rq)
++		return false;
++
++	update_curr_common(rq);
++
++	list_del_init(&rt_se->run_list);
++	if (list_empty(&rt_rq->active.queue[prio]))
++		__clear_bit(prio, rt_rq->active.bitmap);
++
++	rt_rq->rt_nr_running--;
++	rt_se->on_rq = 0;
++	sub_nr_running(rq, 1);
++
++	next_prio = find_first_bit(rt_rq->active.bitmap, MAX_RT_PRIO);
++	rt_rq->highest_prio.curr = (next_prio < MAX_RT_PRIO) ? next_prio
++							     : MAX_RT_PRIO - 1;
++	if (!rt_rq->rt_nr_running)
++		rt_rq->rt_queued = 0;
++	return true;
++}
++
++static void yield_task_rt(struct rq *rq)
++{
++	struct rt_rq *rt_rq = &rq->rt;
++	struct sched_rt_entity *rt_se = &rq->donor->rt;
++	int prio = rq->donor->prio;
++
++	if (rt_se->on_rq &&
++	    rt_rq->active.queue[prio].prev != &rt_se->run_list) {
++		list_del(&rt_se->run_list);
++		list_add_tail(&rt_se->run_list, &rt_rq->active.queue[prio]);
++	}
++}
++
++static void wakeup_preempt_rt(struct rq *rq, struct task_struct *p, int flags)
++{
++	if (p->prio < rq->donor->prio)
++		resched_curr(rq);
++}
++
++static struct task_struct *pick_task_rt(struct rq *rq, struct rq_flags *rf)
++{
++	struct rt_rq *rt_rq = &rq->rt;
++	struct sched_rt_entity *rt_se;
++	int prio;
++
++	if (!rt_rq->rt_nr_running)
++		return NULL;
++
++	prio = find_first_bit(rt_rq->active.bitmap, MAX_RT_PRIO);
++	if (prio >= MAX_RT_PRIO)
++		return NULL;
++
++	rt_se = list_first_entry(&rt_rq->active.queue[prio],
++				 struct sched_rt_entity, run_list);
++	return container_of(rt_se, struct task_struct, rt);
++}
++
++static void put_prev_task_rt(struct rq *rq, struct task_struct *p,
++			     struct task_struct *next)
++{
++	update_curr_common(rq);
++}
++
++static void set_next_task_rt(struct rq *rq, struct task_struct *p, bool first)
++{
++	p->se.exec_start = rq_clock_task(rq);
++	p->rt.time_slice = sched_rr_timeslice;
++}
++
++static int select_task_rq_rt(struct task_struct *p, int task_cpu, int flags)
++{
++	return task_cpu;	/* UP: only one CPU exists */
++}
++
++static void task_tick_rt(struct rq *rq, struct task_struct *p, int queued)
++{
++	update_curr_common(rq);
++	/* No RR rotation; pure FIFO. */
++}
++
++static unsigned int get_rr_interval_rt(struct rq *rq, struct task_struct *task)
++{
++	/* Time slice is 0 for SCHED_FIFO tasks (mainline contract). */
++	return task->policy == SCHED_RR ? sched_rr_timeslice : 0;
++}
++
++static void update_curr_rt(struct rq *rq)
++{
++	update_curr_common(rq);
++}
++
++static void prio_changed_rt(struct rq *rq, struct task_struct *p, u64 oldprio)
++{
++	if (!task_on_rq_queued(p))
++		return;
++	if (p == rq->donor) {
++		if (rq->rt.highest_prio.curr < p->prio)
++			resched_curr(rq);
++	} else if (p->prio < rq->donor->prio) {
++		resched_curr(rq);
++	}
++}
++
++static void switched_to_rt(struct rq *rq, struct task_struct *p)
++{
++	if (task_on_rq_queued(p) && p->prio < rq->donor->prio)
++		resched_curr(rq);
++}
++
++static void switched_from_rt(struct rq *rq, struct task_struct *p) { }
++
++DEFINE_SCHED_CLASS(rt) = {
++	.enqueue_task		= enqueue_task_rt,
++	.dequeue_task		= dequeue_task_rt,
++	.yield_task		= yield_task_rt,
++
++	.wakeup_preempt		= wakeup_preempt_rt,
++
++	.pick_task		= pick_task_rt,
++	.put_prev_task		= put_prev_task_rt,
++	.set_next_task		= set_next_task_rt,
++
++	.select_task_rq		= select_task_rq_rt,
++	.set_cpus_allowed	= set_cpus_allowed_common,
++
++	.task_tick		= task_tick_rt,
++
++	.get_rr_interval	= get_rr_interval_rt,
++
++	.switched_to		= switched_to_rt,
++	.switched_from		= switched_from_rt,
++	.prio_changed		= prio_changed_rt,
++
++	.update_curr		= update_curr_rt,
++};
++
++#endif /* CONFIG_SCHED_RT_TINY */
+-- 
+2.43.0
+

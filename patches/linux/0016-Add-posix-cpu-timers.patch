@@ -1,0 +1,126 @@
+From b7c7e04beb799ec0cd2c14d5ae882ff98ef5438f Mon Sep 17 00:00:00 2001
+From: Chisheng Chen <johnny1001s000602@gmail.com>
+Date: Thu, 7 May 2026 00:54:12 +0800
+Subject: [PATCH 16/19] Add posix cpu timers
+
+---
+ init/Kconfig                   | 17 +++++++++
+ kernel/time/posix-cpu-timers.c | 70 ++++++++++++++++++++++++++++++++++
+ 2 files changed, 87 insertions(+)
+
+diff --git a/init/Kconfig b/init/Kconfig
+index 7a85e2399..55888ee7c 100644
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -1036,6 +1036,23 @@ config SCHED_NO_RICH_API
+ 	  Say N unless you are building a heavily size-constrained image.
+ 
+ 
++config POSIX_CPU_TIMERS
++	bool "POSIX per-process / per-thread CPU clocks"
++	depends on POSIX_TIMERS
++	default y
++	help
++	  Build kernel/time/posix-cpu-timers.c, which implements
++	  CLOCK_PROCESS_CPUTIME_ID and CLOCK_THREAD_CPUTIME_ID for
++	  clock_gettime / clock_getres / clock_nanosleep / timer_create,
++	  RLIMIT_CPU enforcement, and ITIMER_PROF / ITIMER_VIRTUAL
++	  expiry.
++
++	  Say N on size-constrained NOMMU images that never query CPU
++	  clocks, never set RLIMIT_CPU, and never arm ITIMER_PROF /
++	  ITIMER_VIRTUAL.  Affected calls return -EINVAL; setrlimit and
++	  setitimer become silent no-ops.  No syscall numbers vanish.
++	  Boot test before deploying.
++
+ endmenu
+ 
+ #
+diff --git a/kernel/time/posix-cpu-timers.c b/kernel/time/posix-cpu-timers.c
+index 0de2bb7cb..3ac49896f 100644
+--- a/kernel/time/posix-cpu-timers.c
++++ b/kernel/time/posix-cpu-timers.c
+@@ -19,6 +19,8 @@
+ 
+ #include "posix-timers.h"
+ 
++#ifdef CONFIG_POSIX_CPU_TIMERS
++
+ static void posix_cpu_timer_rearm(struct k_itimer *timer);
+ 
+ void posix_cputimers_group_init(struct posix_cputimers *pct, u64 cpu_limit)
+@@ -1668,3 +1670,71 @@ const struct k_clock clock_thread = {
+ 	.clock_get_timespec	= thread_cpu_clock_get,
+ 	.timer_create		= thread_cpu_timer_create,
+ };
++
++#else /* !CONFIG_POSIX_CPU_TIMERS */
++
++/*
++ * Minimal stub for !CONFIG_POSIX_CPU_TIMERS.  CPU-clock IDs and
++ * RLIMIT_CPU / ITIMER_{PROF,VIRTUAL} expiry become silent no-ops;
++ * clock_gettime / clock_getres / clock_nanosleep / timer_create on
++ * CLOCK_PROCESS_CPUTIME_ID and CLOCK_THREAD_CPUTIME_ID return -EINVAL
++ * via the k_clock stub-method tables registered below.  See the
++ * POSIX_CPU_TIMERS help in init/Kconfig for the gating rationale.
++ */
++
++void posix_cputimers_group_init(struct posix_cputimers *pct, u64 cpu_limit) { }
++void posix_cpu_timers_exit(struct task_struct *tsk) { }
++void posix_cpu_timers_exit_group(struct task_struct *tsk) { }
++void run_posix_cpu_timers(void) { }
++
++int update_rlimit_cpu(struct task_struct *task, unsigned long rlim_new)
++{
++	return 0;
++}
++
++void thread_group_sample_cputime(struct task_struct *tsk, u64 *samples)
++{
++	samples[0] = samples[1] = samples[2] = 0;
++}
++
++void set_process_cpu_timer(struct task_struct *tsk, unsigned int clkid,
++			   u64 *newval, u64 *oldval)
++{
++	if (oldval)
++		*oldval = 0;
++}
++
++static int posix_cpu_stub_getres(const clockid_t which_clock,
++				 struct timespec64 *tp)
++{
++	return -EINVAL;
++}
++
++static int posix_cpu_stub_get(const clockid_t which_clock,
++			      struct timespec64 *tp)
++{
++	return -EINVAL;
++}
++
++static int posix_cpu_stub_create(struct k_itimer *new_timer)
++{
++	return -EINVAL;
++}
++
++static int posix_cpu_stub_nsleep(const clockid_t which_clock, int flags,
++				 const struct timespec64 *rqtp)
++{
++	return -EINVAL;
++}
++
++#define POSIX_CPU_STUB_KCLOCK					\
++	.clock_getres		= posix_cpu_stub_getres,	\
++	.clock_get_timespec	= posix_cpu_stub_get,		\
++	.timer_create		= posix_cpu_stub_create,	\
++	.nsleep			= posix_cpu_stub_nsleep
++
++const struct k_clock clock_posix_cpu = { POSIX_CPU_STUB_KCLOCK };
++const struct k_clock clock_process   = { POSIX_CPU_STUB_KCLOCK };
++const struct k_clock clock_thread    = { POSIX_CPU_STUB_KCLOCK };
++
++#endif /* CONFIG_POSIX_CPU_TIMERS */
+-- 
+2.43.0
+

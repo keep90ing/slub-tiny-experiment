@@ -1,0 +1,84 @@
+From d32257359a2f552184e2bcc3ec5aac4e66f0e621 Mon Sep 17 00:00:00 2001
+From: Chisheng Chen <johnny1001s000602@gmail.com>
+Date: Thu, 7 May 2026 00:57:30 +0800
+Subject: [PATCH 19/19] Add time no set wallclock
+
+---
+ init/Kconfig              | 22 ++++++++++++++++++++++
+ kernel/time/timekeeping.c |  6 ++++++
+ 2 files changed, 28 insertions(+)
+
+diff --git a/init/Kconfig b/init/Kconfig
+index 4dd0532e6..f1c788a33 100644
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -1104,6 +1104,28 @@ config SCHED_RT_TINY
+ 	  Say N unless you are building a heavily size-constrained image.
+ 	  Boot test before deploying.
+ 
++config TIME_NO_SET_WALLCLOCK
++	bool "Drop wallclock-setting paths (clock_settime / adjtimex / settimeofday)"
++	default n
++	help
++	  Stub do_settimeofday64, do_adjtimex, and timekeeping_warp_clock
++	  to return -EPERM / no-op respectively.  Effective userspace
++	  impact:
++
++	    settimeofday(2)  -> -EPERM
++	    clock_settime(2) -> -EPERM
++	    adjtimex(2)      -> -EPERM
++	    stime(2)         -> -EPERM
++	    clock_gettime(2) -> unchanged (read paths stay live)
++
++	  Safe on NOMMU images with no NTP source, no RTC, and a stable
++	  boot-time epoch (QEMU provides one).  The wallclock cannot be
++	  corrected after boot.  The NTP discipline / leap-second / TAI
++	  maintenance helpers in timekeeping.c lose all in-tree callers
++	  and become candidates for LTO dead-stripping.
++
++	  Say N unless you are building a heavily size-constrained image.
++
+ endmenu
+ 
+ #
+diff --git a/kernel/time/timekeeping.c b/kernel/time/timekeeping.c
+index c07e562ee..bc7d0ed2b 100644
+--- a/kernel/time/timekeeping.c
++++ b/kernel/time/timekeeping.c
+@@ -1433,6 +1433,9 @@ EXPORT_SYMBOL_GPL(timekeeping_clocksource_has_base);
+  */
+ int do_settimeofday64(const struct timespec64 *ts)
+ {
++#ifdef CONFIG_TIME_NO_SET_WALLCLOCK
++	return -EPERM;
++#else
+ 	struct timespec64 ts_delta, xt;
+ 
+ 	if (!timespec64_valid_settod(ts))
+@@ -1462,6 +1465,7 @@ int do_settimeofday64(const struct timespec64 *ts)
+ 	audit_tk_injoffset(ts_delta);
+ 	add_device_randomness(ts, sizeof(*ts));
+ 	return 0;
++#endif
+ }
+ EXPORT_SYMBOL(do_settimeofday64);
+ 
+@@ -1556,6 +1560,7 @@ int persistent_clock_is_local;
+  */
+ void timekeeping_warp_clock(void)
+ {
++#ifndef CONFIG_TIME_NO_SET_WALLCLOCK
+ 	if (sys_tz.tz_minuteswest != 0) {
+ 		struct timespec64 adjust;
+ 
+@@ -1564,6 +1569,7 @@ void timekeeping_warp_clock(void)
+ 		adjust.tv_nsec = 0;
+ 		timekeeping_inject_offset(&adjust);
+ 	}
++#endif
+ }
+ 
+ /*
+-- 
+2.43.0
+
