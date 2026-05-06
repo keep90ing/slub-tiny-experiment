@@ -1,0 +1,28 @@
+From 5dbb5426d04a6718a86b159d6f4591436a13c4da Mon Sep 17 00:00:00 2001
+From: Chisheng Chen <johnny1001s000602@gmail.com>
+Date: Wed, 6 May 2026 18:20:35 +0800
+Subject: [PATCH 10/10] Modify the base of mtd-rom
+
+---
+ arch/arm/boot/dts/st/stm32f429-disco.dts | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm/boot/dts/st/stm32f429-disco.dts b/arch/arm/boot/dts/st/stm32f429-disco.dts
+index cda8a951d..cb54ae382 100644
+--- a/arch/arm/boot/dts/st/stm32f429-disco.dts
++++ b/arch/arm/boot/dts/st/stm32f429-disco.dts
+@@ -73,9 +73,9 @@ flash@8000000 {
+ 		bank-width = <4>;
+ 		#address-cells = <1>;
+ 
+-		partition@190000 {
++		partition@18a000 {
+ 			label = "romfs";
+-			reg = <0x190000 0x70000>;
++			reg = <0x18a000 0x76000>;
+ 		};
+ 	};
+ 
+-- 
+2.43.0
+

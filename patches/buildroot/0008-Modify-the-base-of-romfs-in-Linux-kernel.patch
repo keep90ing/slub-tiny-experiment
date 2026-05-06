@@ -1,0 +1,25 @@
+From 2d08fc1047581b0f3cfda335b9114eff65af12ad Mon Sep 17 00:00:00 2001
+From: Chisheng Chen <johnny1001s000602@gmail.com>
+Date: Wed, 6 May 2026 18:22:45 +0800
+Subject: [PATCH 8/8] Modify the base of romfs in Linux kernel
+
+---
+ board/stmicroelectronics/stm32f429-disco/flash.sh | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/board/stmicroelectronics/stm32f429-disco/flash.sh b/board/stmicroelectronics/stm32f429-disco/flash.sh
+index 79daa5c9..f8ba4173 100755
+--- a/board/stmicroelectronics/stm32f429-disco/flash.sh
++++ b/board/stmicroelectronics/stm32f429-disco/flash.sh
+@@ -16,7 +16,7 @@ fi
+ 
+ COMBINED="${OUTPUT_DIR}/images/xip_rootfs_combined.bin"
+ XIP_SIZE=$(stat -c%s "${OUTPUT_DIR}/images/xipImage")
+-PAD_TARGET=$((0x08150000 - 0x0800C000))
++PAD_TARGET=$((0x0818a000 - 0x0800C000))
+ if [ "$XIP_SIZE" -gt "$PAD_TARGET" ]; then
+     echo "ERROR: xipImage ($XIP_SIZE bytes) exceeds rootfs start offset ($PAD_TARGET bytes)"
+     exit 1
+-- 
+2.43.0
+
