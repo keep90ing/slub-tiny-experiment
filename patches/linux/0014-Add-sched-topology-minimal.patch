@@ -1,0 +1,151 @@
+From 732eac4e923d1ab6f32e3a21bc3158297439342b Mon Sep 17 00:00:00 2001
+From: Chisheng Chen <johnny1001s000602@gmail.com>
+Date: Wed, 6 May 2026 23:35:28 +0800
+Subject: [PATCH 14/14] Add sched topology minimal
+
+---
+ init/Kconfig            | 22 ++++++++++
+ kernel/sched/topology.c | 90 +++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 112 insertions(+)
+
+diff --git a/init/Kconfig b/init/Kconfig
+index a50c7e635..ce1f32029 100644
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -992,6 +992,28 @@ config SCHED_DEBUG_OUTPUT
+ 	  Boot-path callers become no-ops; OOPS/panic backtraces are
+ 	  unaffected (sched_show_task lives in core.c).
+ 
++config SCHED_TOPOLOGY_MINIMAL
++	bool "Drop scheduler-domain construction (UP NOMMU only)"
++	default n
++	help
++	  Replace kernel/sched/topology.c with a minimal stub block that
++	  keeps only def_root_domain, init_rootdomain, init_defrootdomain,
++	  rq_attach_root, sched_get_rd, sched_put_rd, the
++	  sched_domains_mutex helpers, and empty no-op shells for
++	  sched_init_domains and partition_sched_domains.
++
++	  Drops all sched_domain / sched_group construction, NUMA topology
++	  discovery, performance-domain bookkeeping, asymmetric-capacity
++	  classification, and sched-domain debug output.  Safe on UP NOMMU
++	  builds where SMP=n, NUMA=n, ENERGY_MODEL=n, CPU_FREQ=n,
++	  CGROUPS=n, and CPUSETS=n.
++
++	  Re-enabling any of those Kconfigs requires reverting this knob
++	  because none of the domain-construction logic remains reachable.
++
++	  Say N unless you are building a heavily size-constrained image.
++
++
+ endmenu
+ 
+ #
+diff --git a/kernel/sched/topology.c b/kernel/sched/topology.c
+index 32dcddaea..902ac58d2 100644
+--- a/kernel/sched/topology.c
++++ b/kernel/sched/topology.c
+@@ -7,6 +7,8 @@
+ #include <linux/bsearch.h>
+ #include "sched.h"
+ 
++#ifndef CONFIG_SCHED_TOPOLOGY_MINIMAL
++
+ DEFINE_MUTEX(sched_domains_mutex);
+ void sched_domains_mutex_lock(void)
+ {
+@@ -2945,3 +2947,91 @@ void partition_sched_domains(int ndoms_new, cpumask_var_t doms_new[],
+ 	partition_sched_domains_locked(ndoms_new, doms_new, dattr_new);
+ 	sched_domains_mutex_unlock();
+ }
++
++#else /* CONFIG_SCHED_TOPOLOGY_MINIMAL */
++
++/*
++ * Minimal topology stub for UP NOMMU images.  No domain construction,
++ * no NUMA, no perf domains, no asym capacity.  Only the symbols that
++ * other TUs (core.c, rt.c, deadline.c stub, cpuset.h fallback) link
++ * against survive.  See SCHED_TOPOLOGY_MINIMAL help in init/Kconfig
++ * for the gating rationale.
++ */
++
++DEFINE_MUTEX(sched_domains_mutex);
++DEFINE_STATIC_KEY_FALSE(sched_asym_cpucapacity);
++
++void sched_domains_mutex_lock(void)
++{
++	mutex_lock(&sched_domains_mutex);
++}
++
++void sched_domains_mutex_unlock(void)
++{
++	mutex_unlock(&sched_domains_mutex);
++}
++
++struct root_domain def_root_domain;
++
++static int init_rootdomain(struct root_domain *rd)
++{
++	if (!zalloc_cpumask_var(&rd->span, GFP_KERNEL))
++		goto out;
++	if (!zalloc_cpumask_var(&rd->online, GFP_KERNEL))
++		goto free_span;
++	if (!zalloc_cpumask_var(&rd->dlo_mask, GFP_KERNEL))
++		goto free_online;
++	if (!zalloc_cpumask_var(&rd->rto_mask, GFP_KERNEL))
++		goto free_dlo_mask;
++
++	rd->visit_cookie = 0;
++	init_dl_bw(&rd->dl_bw);
++	if (cpudl_init(&rd->cpudl) != 0)
++		goto free_rto_mask;
++	if (cpupri_init(&rd->cpupri) != 0)
++		goto free_cpudl;
++	return 0;
++
++free_cpudl:
++	cpudl_cleanup(&rd->cpudl);
++free_rto_mask:
++	free_cpumask_var(rd->rto_mask);
++free_dlo_mask:
++	free_cpumask_var(rd->dlo_mask);
++free_online:
++	free_cpumask_var(rd->online);
++free_span:
++	free_cpumask_var(rd->span);
++out:
++	return -ENOMEM;
++}
++
++void __init init_defrootdomain(void)
++{
++	init_rootdomain(&def_root_domain);
++	atomic_set(&def_root_domain.refcount, 1);
++}
++
++void rq_attach_root(struct rq *rq, struct root_domain *rd)
++{
++	atomic_inc(&rd->refcount);
++	rq->rd = rd;
++	cpumask_set_cpu(rq->cpu, rd->span);
++}
++
++void sched_get_rd(struct root_domain *rd)
++{
++	atomic_inc(&rd->refcount);
++}
++
++void sched_put_rd(struct root_domain *rd)
++{
++	atomic_dec(&rd->refcount);
++}
++
++int __init sched_init_domains(const struct cpumask *cpu_map) { return 0; }
++
++void partition_sched_domains(int ndoms_new, cpumask_var_t doms_new[],
++			     struct sched_domain_attr *dattr_new) { }
++
++#endif /* CONFIG_SCHED_TOPOLOGY_MINIMAL */
+-- 
+2.43.0
+
