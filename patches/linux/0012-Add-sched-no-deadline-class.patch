@@ -1,0 +1,115 @@
+From 901c307976560fe6b54026c936172926d09e2272 Mon Sep 17 00:00:00 2001
+From: Chisheng Chen <johnny1001s000602@gmail.com>
+Date: Wed, 6 May 2026 20:19:49 +0800
+Subject: [PATCH 12/12] Add sched no deadline class
+
+---
+ init/Kconfig            | 13 +++++++++
+ kernel/sched/deadline.c | 63 +++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 76 insertions(+)
+
+diff --git a/init/Kconfig b/init/Kconfig
+index 2df9cb397..bff1c4855 100644
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -933,6 +933,19 @@ config SCHED_PROXY_EXEC
+ 	  This option enables proxy execution, a mechanism for mutex-owning
+ 	  tasks to inherit the scheduling context of higher priority waiters.
+ 
++config SCHED_DEADLINE_CLASS
++	bool "SCHED_DEADLINE earliest-deadline-first scheduling class"
++	default y
++	help
++	  Build kernel/sched/deadline.c, which implements the SCHED_DEADLINE
++	  policy (EDF + Constant Bandwidth Server) and the deadline-server
++	  bandwidth backing for SCHED_OTHER.
++
++	  Say N on size-constrained NOMMU images that never set SCHED_DEADLINE
++	  policy and need every byte back.  __checkparam_dl rejects all DL
++	  attribute sets; sched_setattr with policy=6 returns -EPERM.  Any
++	  later attempt to program a DL server fails with -EOPNOTSUPP.
++
+ config SCHED_DEBUG_OUTPUT
+ 	bool "Scheduler debug/output paths"
+ 	default y
+diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
+index 674de6a48..81582db3f 100644
+--- a/kernel/sched/deadline.c
++++ b/kernel/sched/deadline.c
+@@ -22,6 +22,8 @@
+ #include "sched.h"
+ #include "pelt.h"
+ 
++#ifdef CONFIG_SCHED_DEADLINE_CLASS
++
+ /*
+  * Default limits for DL period; on the top end we guard against small util
+  * tasks still getting ridiculously long effective runtimes, on the bottom end we
+@@ -3842,3 +3844,64 @@ void print_dl_stats(struct seq_file *m, int cpu)
+ {
+ 	print_dl_rq(m, cpu, &cpu_rq(cpu)->dl);
+ }
++
++#else /* !CONFIG_SCHED_DEADLINE_CLASS */
++
++#include <linux/sched/deadline.h>
++
++/*
++ * Stub deadline scheduling class.  No task ever joins SCHED_DEADLINE
++ * because __checkparam_dl rejects every attribute set, so all callbacks
++ * except pick_task are unreachable and remain NULL.  pick_task is the
++ * one method the chain walk in pick_next_task_balance / pick_next_task
++ * invokes unconditionally per class; returning NULL forwards control to
++ * the next class (rt -> fair -> idle).
++ */
++
++static struct task_struct *pick_task_dl_stub(struct rq *rq, struct rq_flags *rf)
++{
++	return NULL;
++}
++
++DEFINE_SCHED_CLASS(dl) = {
++	.pick_task = pick_task_dl_stub,
++};
++
++u64 dl_cookie;
++
++bool dl_bw_visited(int cpu, u64 cookie) { return false; }
++int dl_bw_deactivate(int cpu) { return 0; }
++int dl_bw_alloc(int cpu, u64 dl_bw) { return 0; }
++void dl_bw_free(int cpu, u64 dl_bw) { }
++
++void init_dl_bw(struct dl_bw *dl_b) { }
++void init_dl_rq(struct dl_rq *dl_rq) { }
++void init_dl_entity(struct sched_dl_entity *dl_se) { }
++void __init init_sched_dl_class(void) { }
++void sched_init_dl_servers(void) { }
++
++int sched_dl_global_validate(void) { return 0; }
++void sched_dl_do_global(void) { }
++int sched_dl_overflow(struct task_struct *p, int policy,
++		      const struct sched_attr *attr) { return -EPERM; }
++void __setparam_dl(struct task_struct *p, const struct sched_attr *attr) { }
++void __getparam_dl(struct task_struct *p, struct sched_attr *attr) { }
++bool __checkparam_dl(const struct sched_attr *attr) { return false; }
++bool dl_param_changed(struct task_struct *p, const struct sched_attr *attr)
++{ return false; }
++int dl_cpuset_cpumask_can_shrink(const struct cpumask *cur,
++				 const struct cpumask *trial) { return 1; }
++s64 dl_scaled_delta_exec(struct rq *rq, struct sched_dl_entity *dl_se,
++			 s64 delta_exec) { return delta_exec; }
++
++void dl_server_init(struct sched_dl_entity *dl_se, struct rq *rq,
++		    dl_server_pick_f pick_task) { }
++void dl_server_start(struct sched_dl_entity *dl_se) { }
++void dl_server_stop(struct sched_dl_entity *dl_se) { }
++void dl_server_update(struct sched_dl_entity *dl_se, s64 delta_exec) { }
++void dl_server_update_idle(struct sched_dl_entity *dl_se, s64 delta_exec) { }
++void __dl_server_attach_root(struct sched_dl_entity *dl_se, struct rq *rq) { }
++int dl_server_apply_params(struct sched_dl_entity *dl_se, u64 runtime,
++			   u64 period, bool init) { return -EOPNOTSUPP; }
++
++#endif /* CONFIG_SCHED_DEADLINE_CLASS */
+-- 
+2.43.0
+
