@@ -1,0 +1,84 @@
+From 061b187d77e140a36c8688435847a2ada42a7fa1 Mon Sep 17 00:00:00 2001
+From: Chisheng Chen <johnny1001s000602@gmail.com>
+Date: Sat, 9 May 2026 18:47:39 +0800
+Subject: [PATCH 9/9] Modify kernel base
+
+---
+ .../stm32f429-disco/flash.sh                  | 54 ++++++++++++++-----
+ 1 file changed, 40 insertions(+), 14 deletions(-)
+
+diff --git a/board/stmicroelectronics/stm32f429-disco/flash.sh b/board/stmicroelectronics/stm32f429-disco/flash.sh
+index f8ba4173..35d60250 100755
+--- a/board/stmicroelectronics/stm32f429-disco/flash.sh
++++ b/board/stmicroelectronics/stm32f429-disco/flash.sh
+@@ -14,27 +14,53 @@ if ! test -d "${OUTPUT_DIR}" ; then
+     exit 1
+ fi
+ 
+-COMBINED="${OUTPUT_DIR}/images/xip_rootfs_combined.bin"
+-XIP_SIZE=$(stat -c%s "${OUTPUT_DIR}/images/xipImage")
+-PAD_TARGET=$((0x0818a000 - 0x0800C000))
+-if [ "$XIP_SIZE" -gt "$PAD_TARGET" ]; then
+-    echo "ERROR: xipImage ($XIP_SIZE bytes) exceeds rootfs start offset ($PAD_TARGET bytes)"
++BOOTLOADER="${OUTPUT_DIR}/images/stm32f429i-disco.bin"
++DTB="${OUTPUT_DIR}/images/stm32f429-disco.dtb"
++KERNEL="${OUTPUT_DIR}/images/xipImage"
++ROMFS="${OUTPUT_DIR}/images/rootfs.romfs"
++RESULT="${OUTPUT_DIR}/images/image.bin"
++
++BASE=0x08000000
++DTB_BASE=0x08000800
++KERNEL_BASE=0x08005800
++ROMFS_BASE=0x0818a000
++
++
++cp "${BOOTLOADER}" "${RESULT}"
++RESULT_SIZE=$(stat -c%s "$RESULT")
++
++if (( BASE + RESULT_SIZE > DTB_BASE )); then
++    echo "ERROR: exceed dtb base ($DTB_BASE)"
+     exit 1
+ fi
+-PAD_BYTES=$((PAD_TARGET - XIP_SIZE))
+-echo "Creating combined image: xipImage ($XIP_SIZE bytes) + $PAD_BYTES pad bytes + rootfs"
+-cp "${OUTPUT_DIR}/images/xipImage" "${COMBINED}"
+-dd if=/dev/zero bs=1 count=$PAD_BYTES 2>/dev/null | tr '\000' '\377' >> "${COMBINED}"
+-cat "${OUTPUT_DIR}/images/rootfs.romfs" >> "${COMBINED}"
+-echo "Combined image size: $(stat -c%s "${COMBINED}") bytes"
++
++dd if=/dev/zero bs=1 count="$((DTB_BASE-BASE-RESULT_SIZE))" >> "${RESULT}"
++cat "${DTB}" >> "${RESULT}"
++
++RESULT_SIZE=$(stat -c%s "$RESULT")
++if (( BASE + RESULT_SIZE > $KERNEL_BASE )); then
++    echo "ERROR: exceed kernel base ($KERNEL_BASE)"
++    exit 1
++fi
++dd if=/dev/zero bs=1 count="$((KERNEL_BASE-BASE-RESULT_SIZE))" >> "${RESULT}"
++cat "${KERNEL}" >> "${RESULT}"
++
++RESULT_SIZE=$(stat -c%s "$RESULT")
++printf "INFO: bootloader + dtb + kernel = 0x%08X\n" "$RESULT_SIZE" 
++if (( BASE + RESULT_SIZE > $ROMFS_BASE )); then
++    echo "ERROR: exceed romfs base ($ROMFS_BASE)"
++    exit 1
++fi
++
++dd if=/dev/zero bs=1 count="$((ROMFS_BASE-BASE-RESULT_SIZE))" >> "${RESULT}"
++cat "${ROMFS}" >> "${RESULT}"
++
+ 
+ ${OUTPUT_DIR}/host/bin/openocd -f board/${BOARD_NAME}.cfg \
+   -c "init" \
+   -c "reset init" \
+   -c "flash probe 0" \
+   -c "flash info 0" \
+-  -c "flash write_image erase ${OUTPUT_DIR}/images/stm32f429i-disco.bin 0x08000000" \
+-  -c "flash write_image erase ${OUTPUT_DIR}/images/stm32f429-disco.dtb 0x08004000" \
+-  -c "flash write_image erase ${COMBINED} 0x0800C000" \
++  -c "flash write_image erase ${RESULT} 0x08000000" \
+   -c "reset run" \
+   -c "shutdown"
+-- 
+2.43.0
+
