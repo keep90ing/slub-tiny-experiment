@@ -1,0 +1,25 @@
+From 06a364f8da2cd5812e57ee3aece6ce94e55b44a0 Mon Sep 17 00:00:00 2001
+From: Chisheng Chen <johnny1001s000602@gmail.com>
+Date: Sat, 9 May 2026 19:05:09 +0800
+Subject: [PATCH 10/10] Modify romfs base
+
+---
+ board/stmicroelectronics/stm32f429-disco/flash.sh | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/board/stmicroelectronics/stm32f429-disco/flash.sh b/board/stmicroelectronics/stm32f429-disco/flash.sh
+index 35d60250..a907e4f1 100755
+--- a/board/stmicroelectronics/stm32f429-disco/flash.sh
++++ b/board/stmicroelectronics/stm32f429-disco/flash.sh
+@@ -23,7 +23,7 @@ RESULT="${OUTPUT_DIR}/images/image.bin"
+ BASE=0x08000000
+ DTB_BASE=0x08000800
+ KERNEL_BASE=0x08005800
+-ROMFS_BASE=0x0818a000
++ROMFS_BASE=0x0817e000
+ 
+ 
+ cp "${BOOTLOADER}" "${RESULT}"
+-- 
+2.43.0
+
