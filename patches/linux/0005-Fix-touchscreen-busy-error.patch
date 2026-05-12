@@ -1,7 +1,7 @@
-From 05c5a729f29b4ac42a41a714b93daa9b98c00cbf Mon Sep 17 00:00:00 2001
+From 6b90b60c7334532e80e6800a1062c8adf33d0cf4 Mon Sep 17 00:00:00 2001
 From: Chisheng Chen <johnny1001s000602@gmail.com>
-Date: Tue, 28 Apr 2026 00:01:42 +0800
-Subject: [PATCH 5/9] Fix touchscreen busy error
+Date: Tue, 12 May 2026 15:51:13 +0800
+Subject: [PATCH 05/20] Fix touchscreen busy error
 
 ---
  arch/arm/boot/dts/st/stm32f4-pinctrl.dtsi |  4 +--

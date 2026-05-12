@@ -1,7 +1,7 @@
-From 03cfa0700fc5015bf473a60db0ce9f99b7dbd8cf Mon Sep 17 00:00:00 2001
+From ae274fa7a7387cf2a4222b71e2d1a3f4fb947439 Mon Sep 17 00:00:00 2001
 From: Chisheng Chen <johnny1001s000602@gmail.com>
-Date: Mon, 27 Apr 2026 22:43:41 +0800
-Subject: [PATCH 1/9] Modify device tree to use romfs
+Date: Tue, 12 May 2026 15:51:12 +0800
+Subject: [PATCH 01/20] Modify device tree to use romfs
 
 ---
  arch/arm/boot/dts/st/stm32f429-disco.dts | 33 +++++++++++++++++++++++-

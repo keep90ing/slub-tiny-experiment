@@ -1,7 +1,7 @@
-From 8f73359030920ef2df6a1fa4301376a597e5b71f Mon Sep 17 00:00:00 2001
+From 7dcaf6fcac868a9627ea5d1cf3364a6ea8e70b82 Mon Sep 17 00:00:00 2001
 From: Chisheng Chen <johnny1001s000602@gmail.com>
-Date: Mon, 27 Apr 2026 22:44:57 +0800
-Subject: [PATCH 4/9] Mount rootfs on mmcblk0p1 on boot
+Date: Tue, 12 May 2026 15:51:13 +0800
+Subject: [PATCH 04/20] Mount rootfs on mmcblk0p1 on boot
 
 ---
  arch/arm/boot/dts/st/stm32f4-pinctrl.dtsi | 4 ++--

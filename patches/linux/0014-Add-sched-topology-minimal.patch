@@ -1,7 +1,7 @@
-From 732eac4e923d1ab6f32e3a21bc3158297439342b Mon Sep 17 00:00:00 2001
+From aa283c45514e5d1a614233c1b418d6485dae70fd Mon Sep 17 00:00:00 2001
 From: Chisheng Chen <johnny1001s000602@gmail.com>
-Date: Wed, 6 May 2026 23:35:28 +0800
-Subject: [PATCH 14/14] Add sched topology minimal
+Date: Tue, 12 May 2026 19:27:37 +0800
+Subject: [PATCH 14/20] Add sched topology minimal
 
 ---
  init/Kconfig            | 22 ++++++++++

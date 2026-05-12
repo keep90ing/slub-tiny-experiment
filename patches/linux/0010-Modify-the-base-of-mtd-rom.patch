@@ -1,7 +1,7 @@
-From 5dbb5426d04a6718a86b159d6f4591436a13c4da Mon Sep 17 00:00:00 2001
+From c28a4f783b4a39a72dca20cfc68637de012993f8 Mon Sep 17 00:00:00 2001
 From: Chisheng Chen <johnny1001s000602@gmail.com>
-Date: Wed, 6 May 2026 18:20:35 +0800
-Subject: [PATCH 10/10] Modify the base of mtd-rom
+Date: Tue, 12 May 2026 15:51:14 +0800
+Subject: [PATCH 10/20] Modify the base of mtd rom
 
 ---
  arch/arm/boot/dts/st/stm32f429-disco.dts | 4 ++--

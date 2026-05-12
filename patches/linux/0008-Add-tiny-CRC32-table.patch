@@ -1,7 +1,7 @@
-From 79de358acfdfba7074f139d7e6bfc543524521fc Mon Sep 17 00:00:00 2001
+From 70a5e54a4dee4254584520d796adeb1555d41dcb Mon Sep 17 00:00:00 2001
 From: Chisheng Chen <johnny1001s000602@gmail.com>
-Date: Thu, 30 Apr 2026 17:42:24 +0800
-Subject: [PATCH 8/9] Add tiny CRC32 table
+Date: Tue, 12 May 2026 15:51:14 +0800
+Subject: [PATCH 08/20] Add tiny CRC32 table
 
 ---
  init/Kconfig         |  8 ++++++++

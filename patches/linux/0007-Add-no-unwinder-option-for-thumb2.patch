@@ -1,7 +1,7 @@
-From 056b732437e1804c59087ab02c81088a1bb40633 Mon Sep 17 00:00:00 2001
+From b2f40d7d60ce26475c46b0d1d86c90a8161f6b93 Mon Sep 17 00:00:00 2001
 From: Chisheng Chen <johnny1001s000602@gmail.com>
-Date: Thu, 30 Apr 2026 17:17:33 +0800
-Subject: [PATCH 7/9] Add no unwinder option for thumb2
+Date: Tue, 12 May 2026 15:51:14 +0800
+Subject: [PATCH 07/20] Add no unwinder option for thumb2
 
 ---
  arch/arm/Kconfig             | 2 +-
@@ -10,10 +10,10 @@ Subject: [PATCH 7/9] Add no unwinder option for thumb2
  3 files changed, 15 insertions(+), 1 deletion(-)
 
 diff --git a/arch/arm/Kconfig b/arch/arm/Kconfig
-index 118f0cd0c..ebfde94df 100644
+index 94273bf4f..e20220e04 100644
 --- a/arch/arm/Kconfig
 +++ b/arch/arm/Kconfig
-@@ -1123,7 +1123,7 @@ config THUMB2_KERNEL
+@@ -1125,7 +1125,7 @@ config THUMB2_KERNEL
  	bool "Compile the kernel in Thumb-2 mode" if !CPU_THUMBONLY
  	depends on (CPU_V7 || CPU_V7M) && !CPU_V6 && !CPU_V6K
  	default y if CPU_THUMBONLY

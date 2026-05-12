@@ -1,7 +1,7 @@
-From e44edb85f828a15c199f005a0de3b103d09d261b Mon Sep 17 00:00:00 2001
+From aac8960378f61390d0596b464fe21f35aa5482b2 Mon Sep 17 00:00:00 2001
 From: Chisheng Chen <johnny1001s000602@gmail.com>
-Date: Thu, 7 May 2026 00:55:43 +0800
-Subject: [PATCH 17/19] Add sched pelt rt mini
+Date: Tue, 12 May 2026 19:27:38 +0800
+Subject: [PATCH 17/20] Add sched pelt rt mini
 
 ---
  init/Kconfig        | 22 ++++++++++++++++++++++

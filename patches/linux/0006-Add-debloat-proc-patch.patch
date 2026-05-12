@@ -1,7 +1,7 @@
-From 0df79ef780977a6a13e067fae22037e90101d43d Mon Sep 17 00:00:00 2001
+From 2a12e67d39553b0809ec0efe1852dbca76dd0d9f Mon Sep 17 00:00:00 2001
 From: Chisheng Chen <johnny1001s000602@gmail.com>
-Date: Thu, 30 Apr 2026 16:14:57 +0800
-Subject: [PATCH 6/9] Add debloat proc patch
+Date: Tue, 12 May 2026 15:51:13 +0800
+Subject: [PATCH 06/20] Add debloat proc patch
 
 ---
  fs/locks.c                    |  2 ++

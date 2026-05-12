@@ -1,55 +1,58 @@
-From 284800d34d29d11b617819b1c519a98043545276 Mon Sep 17 00:00:00 2001
+From a49e85cc98a8d5e778051ae1c4e3ebbd3f9df253 Mon Sep 17 00:00:00 2001
 From: Chisheng Chen <johnny1001s000602@gmail.com>
-Date: Mon, 27 Apr 2026 22:44:32 +0800
-Subject: [PATCH 3/9] Add GCC LTO support
+Date: Tue, 12 May 2026 15:51:13 +0800
+Subject: [PATCH 03/20] Add GCC LTO support
 
 ---
  Kbuild                              |  1 +
- Makefile                            |  6 +++-
- arch/Kconfig                        | 18 ++++++++++++
- arch/arm/Kconfig                    |  1 +
+ Makefile                            |  6 ++-
+ arch/Kconfig                        | 18 +++++++
+ arch/arm/Kconfig                    |  3 ++
+ arch/arm/Makefile                   |  5 ++
+ arch/arm/boot/compressed/Makefile   |  3 ++
+ arch/arm/kernel/entry-common.S      |  6 +++
  arch/arm/mm/Makefile                |  1 +
- include/linux/compiler.h            |  8 ++++++
- include/linux/compiler_attributes.h | 12 ++++++++
+ include/linux/compiler.h            |  8 +++
+ include/linux/compiler_attributes.h | 12 +++++
  include/linux/init.h                |  2 +-
- include/linux/linkage.h             |  8 +++++-
+ include/linux/linkage.h             |  8 ++-
  init/Makefile                       |  1 +
  kernel/entry/common.c               |  2 +-
  kernel/livepatch/Kconfig            |  1 +
- kernel/softirq.c                    |  6 ++--
+ kernel/softirq.c                    |  6 +--
  kernel/static_call.c                |  2 +-
  lib/Makefile                        |  1 +
- mm/kasan/generic.c                  |  6 ++--
- mm/kasan/shadow.c                   |  6 ++--
+ mm/kasan/generic.c                  |  6 +--
+ mm/kasan/shadow.c                   |  6 +--
  scripts/Makefile.build              |  2 +-
  scripts/Makefile.lib                |  2 +-
- scripts/Makefile.lto                | 43 +++++++++++++++++++++++++++++
+ scripts/Makefile.lto                | 80 +++++++++++++++++++++++++++++
  scripts/Makefile.modfinal           |  2 +-
- scripts/Makefile.vmlinux            |  4 ++-
- scripts/Makefile.vmlinux_o          |  2 +-
- scripts/bloat-o-meter               |  2 ++
- scripts/gcc-ld                      | 40 +++++++++++++++++++++++++++
+ scripts/Makefile.vmlinux            |  4 +-
+ scripts/Makefile.vmlinux_o          |  6 ++-
+ scripts/bloat-o-meter               |  2 +
+ scripts/gcc-ld                      | 41 +++++++++++++++
  scripts/link-vmlinux.sh             |  3 +-
  scripts/mksysmap                    |  3 ++
- scripts/mod/Makefile                |  2 ++
- 28 files changed, 167 insertions(+), 20 deletions(-)
+ scripts/mod/Makefile                |  2 +
+ 31 files changed, 225 insertions(+), 20 deletions(-)
  create mode 100644 scripts/Makefile.lto
  create mode 100644 scripts/gcc-ld
 
 diff --git a/Kbuild b/Kbuild
-index 13324b4bb..2b9b5a307 100644
+index 13324b4bb..9a6d4b1c6 100644
 --- a/Kbuild
 +++ b/Kbuild
 @@ -10,6 +10,7 @@
  bounds-file := include/generated/bounds.h
  
  targets := kernel/bounds.s
-+KBUILD_CFLAGS += $(DISABLE_LTO_GCC)
++CFLAGS_bounds.s += $(DISABLE_LTO)
  
  $(bounds-file): kernel/bounds.s FORCE
  	$(call filechk,offsets,__LINUX_BOUNDS_H__)
 diff --git a/Makefile b/Makefile
-index 36d0a32fb..feef62019 100644
+index 36d0a32fb..02c7bdb32 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -1044,12 +1044,15 @@ CC_FLAGS_LTO	+= -fvisibility=hidden
@@ -73,12 +76,12 @@ index 36d0a32fb..feef62019 100644
  include-$(CONFIG_PROPELLER_CLANG)	+= scripts/Makefile.propeller
  include-$(CONFIG_WARN_CONTEXT_ANALYSIS) += scripts/Makefile.context-analysis
  include-$(CONFIG_GCC_PLUGINS)	+= scripts/Makefile.gcc-plugins
-+include-$(CONFIG_LTO_GCC)	+= scripts/Makefile.lto
++include-$(CONFIG_LTO)		+= scripts/Makefile.lto
  
  include $(addprefix $(srctree)/, $(include-y))
  
 diff --git a/arch/Kconfig b/arch/Kconfig
-index 102ddbd42..3c330ee37 100644
+index 102ddbd42..fae5ce4e2 100644
 --- a/arch/Kconfig
 +++ b/arch/Kconfig
 @@ -799,6 +799,12 @@ config ARCH_SUPPORTS_LTO_CLANG_THIN
@@ -86,7 +89,7 @@ index 102ddbd42..3c330ee37 100644
  	  ThinLTO mode.
  
 +config ARCH_SUPPORTS_LTO_GCC
-+    bool
++	bool
 +
 +config BAD_AR
 +	bool
@@ -114,17 +117,67 @@ index 102ddbd42..3c330ee37 100644
  	bool "None"
  	help
 diff --git a/arch/arm/Kconfig b/arch/arm/Kconfig
-index ec33376f8..118f0cd0c 100644
+index ec33376f8..94273bf4f 100644
 --- a/arch/arm/Kconfig
 +++ b/arch/arm/Kconfig
-@@ -3,6 +3,7 @@ config ARM
+@@ -3,6 +3,9 @@ config ARM
  	bool
  	default y
  	select ARCH_32BIT_OFF_T
-+    select ARCH_SUPPORTS_LTO_GCC if LD_IS_BFD
++	select ARCH_SUPPORTS_LTO_GCC if LD_IS_BFD
++	select ARCH_SUPPORTS_LTO_CLANG if !CPU_ENDIAN_BE32
++	select ARCH_SUPPORTS_LTO_CLANG_THIN if !CPU_ENDIAN_BE32
  	select ARCH_CORRECT_STACKTRACE_ON_KRETPROBE if HAVE_KRETPROBES && FRAME_POINTER && !ARM_UNWIND
  	select ARCH_HAS_BINFMT_FLAT
  	select ARCH_HAS_CACHE_LINE_SIZE if OF
+diff --git a/arch/arm/Makefile b/arch/arm/Makefile
+index b7de4b6b2..453763659 100644
+--- a/arch/arm/Makefile
++++ b/arch/arm/Makefile
+@@ -146,6 +146,11 @@ CFLAGS_ISA	:=$(call cc-option,-marm,) $(AFLAGS_NOWARN)
+ AFLAGS_ISA	:=$(CFLAGS_ISA)
+ endif
+ 
++ifeq ($(CONFIG_LTO_CLANG)$(CONFIG_THUMB2_KERNEL),yy)
++# ThinLTO re-parses inline asm during link-time code generation.
++KBUILD_LDFLAGS	+= -plugin-opt=-arm-implicit-it=always
++endif
++
+ # Need -Uarm for gcc < 3.x
+ KBUILD_CPPFLAGS	+=$(cpp-y)
+ KBUILD_CFLAGS	+=$(CFLAGS_ABI) $(CFLAGS_ISA) $(arch-y) $(tune-y) $(call cc-option,-mshort-load-bytes,$(call cc-option,-malignment-traps,)) -msoft-float -Uarm
+diff --git a/arch/arm/boot/compressed/Makefile b/arch/arm/boot/compressed/Makefile
+index a159120d1..47959f3ca 100644
+--- a/arch/arm/boot/compressed/Makefile
++++ b/arch/arm/boot/compressed/Makefile
+@@ -22,6 +22,9 @@ ifeq ($(CONFIG_ARM_VIRT_EXT),y)
+ OBJS		+= hyp-stub.o
+ endif
+ 
++# The decompressor runs standalone before the kernel; must not use LTO.
++KBUILD_CFLAGS += $(DISABLE_LTO)
++
+ #
+ # Architecture dependencies
+ #
+diff --git a/arch/arm/kernel/entry-common.S b/arch/arm/kernel/entry-common.S
+index 88336a129..0946dd8f5 100644
+--- a/arch/arm/kernel/entry-common.S
++++ b/arch/arm/kernel/entry-common.S
+@@ -271,7 +271,13 @@ local_restart:
+ 	add	r1, sp, #S_OFF
+ 2:	cmp	scno, #(__ARM_NR_BASE - __NR_SYSCALL_BASE)
+ 	eor	r0, scno, #__NR_SYSCALL_BASE	@ put OS number back
++#ifdef CONFIG_LTO_GCC
++	bcc	1f				@ invert: B.W has +-16MB reach
++	b	arm_syscall
++1:
++#else
+ 	bcs	arm_syscall
++#endif
+ 	mov	why, #0				@ no longer a real syscall
+ 	b	sys_ni_syscall			@ not private func
+ 
 diff --git a/arch/arm/mm/Makefile b/arch/arm/mm/Makefile
 index 1e2201013..61f44e360 100644
 --- a/arch/arm/mm/Makefile
@@ -221,14 +274,14 @@ index b11660b70..76ac54922 100644
  
  #define __page_aligned_data	__section(".data..page_aligned") __aligned(PAGE_SIZE)
 diff --git a/init/Makefile b/init/Makefile
-index d6f75d890..f325fdd44 100644
+index d6f75d890..9bfe59cd3 100644
 --- a/init/Makefile
 +++ b/init/Makefile
 @@ -60,3 +60,4 @@ include/generated/utsversion.h: FORCE
  
  $(obj)/version-timestamp.o: include/generated/utsversion.h
  CFLAGS_version-timestamp.o := -include include/generated/utsversion.h
-+CFLAGS_version-timestamp.o += $(DISABLE_LTO_GCC)
++CFLAGS_version-timestamp.o += $(DISABLE_LTO)
 diff --git a/kernel/entry/common.c b/kernel/entry/common.c
 index 9ef63e414..3294d5b02 100644
 --- a/kernel/entry/common.c
@@ -387,28 +440,68 @@ index 0718e39ce..3931ae32c 100644
  cmd_gen_objtooldep = $(if $(objtool-enabled), { echo ; echo '$@: $$(wildcard $(objtool))' ; } >> $(dot-target).cmd)
 diff --git a/scripts/Makefile.lto b/scripts/Makefile.lto
 new file mode 100644
-index 000000000..33ac0da2b
+index 000000000..8ad0d9d09
 --- /dev/null
 +++ b/scripts/Makefile.lto
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,80 @@
 +#
-+# Support for gcc link time optimization
++# Support for link time optimization
 +#
 +
++DISABLE_LTO :=
 +DISABLE_LTO_GCC :=
-+export DISABLE_LTO_GCC
++DISABLE_LTO_CLANG :=
++export DISABLE_LTO DISABLE_LTO_GCC DISABLE_LTO_CLANG
++
++ifdef CONFIG_LTO_CLANG
++	DISABLE_LTO := -fno-lto
++	DISABLE_LTO_CLANG := -fno-lto
++endif
 +
 +ifdef CONFIG_LTO_GCC
 +	CC_FLAGS_LTO_GCC := -flto
 +	DISABLE_LTO_GCC := -fno-lto
++	DISABLE_LTO := -fno-lto
 +
 +	KBUILD_CFLAGS += ${CC_FLAGS_LTO_GCC}
++
++	# Constrain LTO cross-TU inlining at compile time.  GCC LTO
++	# reads each .o's .gnu.lto_.opts during link-time codegen, so
++	# these flags must be in KBUILD_CFLAGS (not lto-flags-y, which
++	# is link-only and effectively ignored for these knobs).
++	# Without these, cross-TU inlining of small helpers eats the
++	# savings from per-function-section --gc-sections.
++	KBUILD_CFLAGS += -fno-inline-functions
++	KBUILD_CFLAGS += -fno-inline-small-functions
++	KBUILD_CFLAGS += -fno-partial-inlining
++	KBUILD_CFLAGS += --param=inline-unit-growth=0
++	KBUILD_CFLAGS += --param=max-inline-insns-auto=0
 +
 +	CC_FLAGS_LTO := -flto
 +	export CC_FLAGS_LTO
 +
 +	lto-flags-y := -flinker-output=nolto-rel -flto=jobserver
-+	lto-flags-y += -fwhole-program
++
++	# ARM: LTO must carry the full arch/ISA/ABI flags to the link
++	# step.  Without these, GCC defaults to armv4t (Thumb-1 only),
++	# causing "invalid constant after fixup" on any Thumb-2
++	# immediate that exceeds the 0-255 Thumb-1 range.
++	lto-flags-y += $(CFLAGS_ABI) $(CFLAGS_ISA) $(arch-y) -msoft-float
++	lto-flags-$(CONFIG_THUMB2_KERNEL) += -mword-relocations
++
++	lto-flags-y += -flto-partition=none
++
++	# Prevent function reordering that causes Thumb-2 conditional
++	# branches (+-1MB R_ARM_THM_JUMP19) to overflow after LTO
++	# merges all .text into a single section.
++	lto-flags-y += -fno-reorder-functions
++
++	# Emit per-function / per-data sections from the LTO link so
++	# the kernel's --gc-sections final link can drop dead
++	# EXPORT_SYMBOL functions that LTO would otherwise keep alive
++	# via __ksymtab references (siphash / LZ4 / ZSTD / FSE /
++	# drm_edid_* / fb_* / mmc_* / i2c_*).
++	lto-flags-y += -ffunction-sections -fdata-sections
 +
 +	lto-flags-$(CONFIG_LTO_CP_CLONE) += -fipa-cp-clone
 +
@@ -424,9 +517,6 @@ index 000000000..33ac0da2b
 +	# LTO gcc creates a lot of files in TMPDIR, and with /tmp as tmpfs
 +	# it's easy to drive the machine OOM. Use the object directory
 +	# instead for temporaries.
-+	# This has the drawback that there might be some junk more visible
-+	# after interrupted compilations, but you would have that junk
-+	# there anyways in /tmp.
 +	TMPDIR ?= $(objtree)
 +	export TMPDIR
 +
@@ -448,7 +538,7 @@ index adcbcde16..0ba409ab0 100644
  		-T $(objtree)/scripts/module.lds -o $@ $(filter %.o, $^)
  
 diff --git a/scripts/Makefile.vmlinux b/scripts/Makefile.vmlinux
-index fcae1e432..d7a227d7a 100644
+index fcae1e432..23d74a1d8 100644
 --- a/scripts/Makefile.vmlinux
 +++ b/scripts/Makefile.vmlinux
 @@ -64,9 +64,11 @@ ARCH_POSTLINK := $(wildcard $(srctree)/arch/$(SRCARCH)/Makefile.postlink)
@@ -459,16 +549,16 @@ index fcae1e432..d7a227d7a 100644
 +	$< "$(LD)" "$(KBUILD_LDFLAGS)" "$(LDFLAGS_vmlinux)" "$@" "$(LDFINAL)";	\
  	$(if $(ARCH_POSTLINK), $(MAKE) -f $(ARCH_POSTLINK) $@, true)
  
-+CFLAGS_.vmlinux.export.o += $(DISABLE_LTO_GCC)
++CFLAGS_.vmlinux.export.o += $(DISABLE_LTO)
 +
  targets += vmlinux.unstripped .vmlinux.export.o
  vmlinux.unstripped: scripts/link-vmlinux.sh vmlinux.o .vmlinux.export.o $(KBUILD_LDS) FORCE
  	+$(call if_changed_dep,link_vmlinux)
 diff --git a/scripts/Makefile.vmlinux_o b/scripts/Makefile.vmlinux_o
-index 527352c22..5f653de4d 100644
+index 527352c22..f4d094f67 100644
 --- a/scripts/Makefile.vmlinux_o
 +++ b/scripts/Makefile.vmlinux_o
-@@ -56,7 +56,7 @@ vmlinux-o-ld-args-$(CONFIG_BUILTIN_MODULE_RANGES)	+= -Map=$@.map
+@@ -56,14 +56,18 @@ vmlinux-o-ld-args-$(CONFIG_BUILTIN_MODULE_RANGES)	+= -Map=$@.map
  
  quiet_cmd_ld_vmlinux.o = LD      $@
        cmd_ld_vmlinux.o = \
@@ -477,6 +567,17 @@ index 527352c22..5f653de4d 100644
  	$(vmlinux-o-ld-args-y) \
  	$(addprefix -T , $(initcalls-lds)) \
  	--whole-archive vmlinux.a --no-whole-archive \
+ 	--start-group $(KBUILD_VMLINUX_LIBS) --end-group \
+ 	$(cmd_objtool)
+ 
++ifdef CONFIG_LTO_GCC
++cmd_check_function_names =
++else
+ cmd_check_function_names = $(srctree)/scripts/check-function-names.sh $@
++endif
+ 
+ define rule_ld_vmlinux.o
+ 	$(call cmd_and_savecmd,ld_vmlinux.o)
 diff --git a/scripts/bloat-o-meter b/scripts/bloat-o-meter
 index db5dd18dc..51a2a74b2 100755
 --- a/scripts/bloat-o-meter
@@ -499,10 +600,10 @@ index db5dd18dc..51a2a74b2 100755
      return sym
 diff --git a/scripts/gcc-ld b/scripts/gcc-ld
 new file mode 100644
-index 000000000..24569ab74
+index 000000000..d55e6518f
 --- /dev/null
 +++ b/scripts/gcc-ld
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,41 @@
 +#!/bin/sh
 +# SPDX-License-Identifier: GPL-2.0
 +# run gcc with ld options
@@ -520,6 +621,7 @@ index 000000000..24569ab74
 +while [ "$1" != "" ] ; do
 +	case "$1" in
 +	-save-temps*|-m32|-m64) N="$1" ;;
++	--param=*) N="$1" ;;
 +	-r) N="$1" ;;
 +	-flinker-output*) N="$1" ;;
 +	-[Wg]*) N="$1" ;;
@@ -543,7 +645,6 @@ index 000000000..24569ab74
 +[ -n "$V" ] && echo >&2 $CC $ARGS
 +
 +exec $CC $ARGS
-\ No newline at end of file
 diff --git a/scripts/link-vmlinux.sh b/scripts/link-vmlinux.sh
 index f99e196ab..2df9d7aa0 100755
 --- a/scripts/link-vmlinux.sh
@@ -577,13 +678,13 @@ index c4531eacd..117654a70 100755
 +# GCC LTO .c. weak symbols
 +/ \.c\./d
 diff --git a/scripts/mod/Makefile b/scripts/mod/Makefile
-index c729bc936..e64e129c7 100644
+index c729bc936..c0f344cfa 100644
 --- a/scripts/mod/Makefile
 +++ b/scripts/mod/Makefile
 @@ -1,5 +1,6 @@
  # SPDX-License-Identifier: GPL-2.0
  CFLAGS_REMOVE_empty.o += $(CC_FLAGS_LTO)
-+CFLAGS_empty.o += $(DISABLE_LTO_GCC)
++CFLAGS_empty.o += $(DISABLE_LTO)
  
  hostprogs-always-y	+= modpost mk_elfconfig
  always-y		+= empty.o
@@ -591,7 +692,7 @@ index c729bc936..e64e129c7 100644
  	$(call filechk,offsets,__DEVICETABLE_OFFSETS_H__)
  
  targets += $(devicetable-offsets-file) devicetable-offsets.s
-+KBUILD_CFLAGS += $(DISABLE_LTO_GCC)
++CFLAGS_devicetable-offsets.s += $(DISABLE_LTO)
  
  # dependencies on generated files need to be listed explicitly
  

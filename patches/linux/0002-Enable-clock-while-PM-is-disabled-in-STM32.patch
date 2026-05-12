@@ -1,7 +1,7 @@
-From 21e1281470454852f22a84fcc048d2b1679860e3 Mon Sep 17 00:00:00 2001
+From b667fb7d534519c3f55a2c1a244038d8e844aee7 Mon Sep 17 00:00:00 2001
 From: Chisheng Chen <johnny1001s000602@gmail.com>
-Date: Mon, 27 Apr 2026 22:44:04 +0800
-Subject: [PATCH 2/9] Enable clock while PM is disabled in STM32
+Date: Tue, 12 May 2026 15:51:12 +0800
+Subject: [PATCH 02/20] Enable clock while PM is disabled in STM32
 
 ---
  drivers/char/hw_random/stm32-rng.c | 12 +++++++++++-

@@ -1,7 +1,7 @@
-From bdb8505ce25f0ebe411eaf9603116a51302fed2f Mon Sep 17 00:00:00 2001
+From 977550f8e15a2bb102edd03a33c2189f8013bc36 Mon Sep 17 00:00:00 2001
 From: Chisheng Chen <johnny1001s000602@gmail.com>
-Date: Wed, 6 May 2026 21:42:53 +0800
-Subject: [PATCH 13/13] Add sched fair tiny
+Date: Tue, 12 May 2026 19:27:37 +0800
+Subject: [PATCH 13/20] Add sched fair tiny
 
 ---
  init/Kconfig        |  32 ++++

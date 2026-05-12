@@ -1,12 +1,12 @@
-From 901c307976560fe6b54026c936172926d09e2272 Mon Sep 17 00:00:00 2001
+From 312140b0a9ce0bd7f4b59f3098ca027737dfc70c Mon Sep 17 00:00:00 2001
 From: Chisheng Chen <johnny1001s000602@gmail.com>
-Date: Wed, 6 May 2026 20:19:49 +0800
-Subject: [PATCH 12/12] Add sched no deadline class
+Date: Tue, 12 May 2026 19:27:37 +0800
+Subject: [PATCH 12/20] Add sched no deadline class
 
 ---
  init/Kconfig            | 13 +++++++++
- kernel/sched/deadline.c | 63 +++++++++++++++++++++++++++++++++++++++++
- 2 files changed, 76 insertions(+)
+ kernel/sched/deadline.c | 65 +++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 78 insertions(+)
 
 diff --git a/init/Kconfig b/init/Kconfig
 index 2df9cb397..bff1c4855 100644
@@ -33,7 +33,7 @@ index 2df9cb397..bff1c4855 100644
  	bool "Scheduler debug/output paths"
  	default y
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index 674de6a48..81582db3f 100644
+index 674de6a48..6b58fe634 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
 @@ -22,6 +22,8 @@
@@ -45,7 +45,7 @@ index 674de6a48..81582db3f 100644
  /*
   * Default limits for DL period; on the top end we guard against small util
   * tasks still getting ridiculously long effective runtimes, on the bottom end we
-@@ -3842,3 +3844,64 @@ void print_dl_stats(struct seq_file *m, int cpu)
+@@ -3842,3 +3844,66 @@ void print_dl_stats(struct seq_file *m, int cpu)
  {
  	print_dl_rq(m, cpu, &cpu_rq(cpu)->dl);
  }
@@ -108,6 +108,8 @@ index 674de6a48..81582db3f 100644
 +void __dl_server_attach_root(struct sched_dl_entity *dl_se, struct rq *rq) { }
 +int dl_server_apply_params(struct sched_dl_entity *dl_se, u64 runtime,
 +			   u64 period, bool init) { return -EOPNOTSUPP; }
++
++void print_dl_stats(struct seq_file *m, int cpu) { }
 +
 +#endif /* CONFIG_SCHED_DEADLINE_CLASS */
 -- 
