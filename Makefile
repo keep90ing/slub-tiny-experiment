@@ -35,6 +35,9 @@ initromfs: cellphone
 	cp -d cellphone/build/lib/ts/pthres.so rootfs/usr/lib/ts
 	cp -a $(BUILDROOT_DIR)/output/target/usr/lib/*libdrm* rootfs/usr/lib
 	cp -a $(BUILDROOT_DIR)/output/target/usr/lib/*libevdev* rootfs/usr/lib
+	$(BUILDROOT_DIR)/output/host/bin/arm-linux-strip rootfs/usr/lib/lib*
+	$(BUILDROOT_DIR)/output/host/bin/arm-linux-strip rootfs/usr/lib/ts/*
+	$(BUILDROOT_DIR)/output/host/bin/arm-linux-strip rootfs/lib/*
 	$(BUILDROOT_DIR)/output/host/bin/genromfs -d rootfs -f $(BUILDROOT_DIR)/output/images/rootfs.romfs
 
 build:
