@@ -1,4 +1,4 @@
-From bc454941d45c9ddd661bbbdc0cf1a7100244b4bf Mon Sep 17 00:00:00 2001
+From f058c54971bb1892a52f4acd77c1300fee14eaf7 Mon Sep 17 00:00:00 2001
 From: Chisheng Chen <johnny1001s000602@gmail.com>
 Date: Tue, 12 May 2026 19:27:39 +0800
 Subject: [PATCH 20/20] Modify romfs base
@@ -8,7 +8,7 @@ Subject: [PATCH 20/20] Modify romfs base
  1 file changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/arch/arm/boot/dts/st/stm32f429-disco.dts b/arch/arm/boot/dts/st/stm32f429-disco.dts
-index cb54ae382..4eb9df4a7 100644
+index cb54ae382..0b9b321fe 100644
 --- a/arch/arm/boot/dts/st/stm32f429-disco.dts
 +++ b/arch/arm/boot/dts/st/stm32f429-disco.dts
 @@ -73,9 +73,9 @@ flash@8000000 {
@@ -16,10 +16,10 @@ index cb54ae382..4eb9df4a7 100644
  		#address-cells = <1>;
  
 -		partition@18a000 {
-+		partition@17e000 {
++		partition@169000 {
  			label = "romfs";
 -			reg = <0x18a000 0x76000>;
-+			reg = <0x17e000 0x82000>;
++			reg = <0x169000 0x97000>;
  		};
  	};
  
