@@ -12,7 +12,10 @@ fetch:
 defconfig:
 	make -C $(BUILDROOT_DIR) stm32f429_disco_xip_defconfig
 
-initromfs:
+cellphone:
+	cellphone/cellphone-build.sh
+
+initromfs: cellphone
 	make -C init
 	rm -rf rootfs
 	mkdir rootfs
@@ -21,10 +24,17 @@ initromfs:
 	mkdir -p rootfs/lib
 	mkdir -p rootfs/proc
 	mkdir -p rootfs/root
-	mkdir -p rootfs/usr
+	mkdir -p rootfs/usr/lib/ts
+	mkdir -p rootfs/usr/lib
 	mv init/init rootfs
 	cp -a -d $(BUILDROOT_DIR)/output/target/lib/*libc* rootfs/lib
-# 	cp -a -d $(BUILDROOT_DIR)/output/target/usr/lib/* rootfs/lib
+	cp -d cellphone/build/lib/libts.so.* rootfs/usr/lib
+	cp -d cellphone/build/lib/ts/dejitter.so rootfs/usr/lib/ts
+	cp -d cellphone/build/lib/ts/input.so rootfs/usr/lib/ts
+	cp -d cellphone/build/lib/ts/linear.so rootfs/usr/lib/ts
+	cp -d cellphone/build/lib/ts/pthres.so rootfs/usr/lib/ts
+	cp -a $(BUILDROOT_DIR)/output/target/usr/lib/*libdrm* rootfs/usr/lib
+	cp -a $(BUILDROOT_DIR)/output/target/usr/lib/*libevdev* rootfs/usr/lib
 	$(BUILDROOT_DIR)/output/host/bin/genromfs -d rootfs -f $(BUILDROOT_DIR)/output/images/rootfs.romfs
 
 build:
@@ -40,4 +50,4 @@ linux-menuconfig:
 flash:
 	$(BUILDROOT_DIR)/board/stmicroelectronics/stm32f429-disco/flash.sh $(BUILDROOT_DIR)/output stm32f429discovery
 
-.PHONY: fetch defconfig build linux-rebuild flash
+.PHONY: fetch defconfig build linux-rebuild flash cellphone
