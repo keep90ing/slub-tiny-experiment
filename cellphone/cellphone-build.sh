@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/bin/sh
 
 BASE_DIR=$(pwd)/cellphone
 cd $BASE_DIR
