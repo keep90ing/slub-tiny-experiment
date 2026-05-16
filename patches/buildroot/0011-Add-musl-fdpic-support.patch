@@ -1,4 +1,4 @@
-From cabfb2e6f72982050520ad9f2d9798b301a308ff Mon Sep 17 00:00:00 2001
+From 56bfc13c7e373ba3782a6a211d5c569eaf4bfdf2 Mon Sep 17 00:00:00 2001
 From: Chisheng Chen <johnny1001s000602@gmail.com>
 Date: Wed, 13 May 2026 14:51:10 +0800
 Subject: [PATCH 11/11] Add musl fdpic support
@@ -42,7 +42,7 @@ index 70475326..3d97d1a2 100644
  config BR2_PACKAGE_MUSL_SUPPORTS
  	bool
 diff --git a/package/musl/musl.mk b/package/musl/musl.mk
-index 13a49a15..0162eb1c 100644
+index 13a49a15..56b29112 100644
 --- a/package/musl/musl.mk
 +++ b/package/musl/musl.mk
 @@ -42,6 +42,47 @@ ifeq ($(BR2_ARM_INSTRUCTIONS_THUMB),y)
@@ -67,7 +67,7 @@ index 13a49a15..0162eb1c 100644
 +
 +MUSL_PRUNE_UNUSED_MATH = 1
 +MUSL_KEEP_MATH_SRCS = copysign.c copysignl.c fabs.c fabsl.c fmod.c fmodl.c \
-+    frexp.c frexpl.c scalbn.c scalbnf.c scalbnl.c
++    frexp.c frexpl.c round.c scalbn.c scalbnf.c scalbnl.c
 +
 +MUSL_PRUNE_MATH_CMD = 														\
 +    if [ "$(MUSL_PRUNE_UNUSED_MATH)" = "1" ]; then 							\
