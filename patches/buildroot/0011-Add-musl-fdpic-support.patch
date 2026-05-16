@@ -1,13 +1,15 @@
-From 56bfc13c7e373ba3782a6a211d5c569eaf4bfdf2 Mon Sep 17 00:00:00 2001
+From c7b812d70a8e48d9c29a456ddf5ade81819bc5a3 Mon Sep 17 00:00:00 2001
 From: Chisheng Chen <johnny1001s000602@gmail.com>
 Date: Wed, 13 May 2026 14:51:10 +0800
 Subject: [PATCH 11/11] Add musl fdpic support
 
 ---
- package/gcc/gcc-final/gcc-final.mk | 10 +++++
- package/musl/Config.in             |  1 -
- package/musl/musl.mk               | 59 +++++++++++++++++++++++++++++-
- 3 files changed, 68 insertions(+), 2 deletions(-)
+ package/gcc/gcc-final/gcc-final.mk            | 10 ++++
+ .../lrzsz/0007-include-stdlib-for-musl.patch  | 12 ++++
+ package/musl/Config.in                        |  1 -
+ package/musl/musl.mk                          | 59 ++++++++++++++++++-
+ 4 files changed, 80 insertions(+), 2 deletions(-)
+ create mode 100644 package/lrzsz/0007-include-stdlib-for-musl.patch
 
 diff --git a/package/gcc/gcc-final/gcc-final.mk b/package/gcc/gcc-final/gcc-final.mk
 index 97a64ae2..d70a59b4 100644
@@ -29,6 +31,24 @@ index 97a64ae2..d70a59b4 100644
 +
  $(eval $(generic-package))
  $(eval $(host-autotools-package))
+diff --git a/package/lrzsz/0007-include-stdlib-for-musl.patch b/package/lrzsz/0007-include-stdlib-for-musl.patch
+new file mode 100644
+index 00000000..cff63729
+--- /dev/null
++++ b/package/lrzsz/0007-include-stdlib-for-musl.patch
+@@ -0,0 +1,12 @@
++diff --git a/src/zglobal.h b/src/zglobal.h
++index 9266878..a0500e5 100644
++--- a/src/zglobal.h
+++++ b/src/zglobal.h
++@@ -24,6 +24,7 @@
++ */
++ 
++ #include "config.h"
+++#include <stdlib.h>
++ #include <sys/types.h>
++ 
++ #ifdef __GNUC__
 diff --git a/package/musl/Config.in b/package/musl/Config.in
 index 70475326..3d97d1a2 100644
 --- a/package/musl/Config.in
