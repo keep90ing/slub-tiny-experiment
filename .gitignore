@@ -1,1 +1,21 @@
-buildroot-2026.02/
+# Downloaded and extracted Buildroot trees
+/buildroot-*.tar.*
+/buildroot-*/
+
+# Generated root filesystem and binaries
+/rootfs/
+/init/init
+
+# External UI/input source trees and install output
+/cellphone/build/
+/cellphone/lv_port_linux/
+/cellphone/tslib/
+
+# SLUB experiment artifacts and serial captures
+/slub/out/
+/slub/logs/
+/run.log
+
+# Python caches
+__pycache__/
+*.py[cod]
