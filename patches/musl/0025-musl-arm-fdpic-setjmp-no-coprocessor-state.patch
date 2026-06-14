@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Wilson Zeng <cheng20011202@gmail.com>
+Subject: [PATCH] arm: fdpic: skip coprocessor state in setjmp
+
+---
+ src/setjmp/arm/longjmp.S | 6 ++++++
+ src/setjmp/arm/setjmp.S  | 6 ++++++
+ 2 files changed, 12 insertions(+)
+
+diff --git a/src/setjmp/arm/longjmp.S b/src/setjmp/arm/longjmp.S
+index e9b0f7e..f2cb843 100644
+--- a/src/setjmp/arm/longjmp.S
++++ b/src/setjmp/arm/longjmp.S
+@@ -11,9 +11,13 @@ longjmp:
+ 	ldmia ip!, {r2,lr}
+ 	mov sp,r2
+ 
++#ifdef __FDPIC__
++	mov r1,#0
++#else
+ 	adr r1,1f
+ 	ldr r2,1f
+ 	ldr r1,[r1,r2]
++#endif
+ 
+ #if __ARM_ARCH < 8
+ 	tst r1,#0x260
+@@ -44,6 +48,8 @@ longjmp:
+ 2:
+ 3:	bx lr
+ 
++#ifndef __FDPIC__
+ .hidden __hwcap
+ .align 2
+ 1:	.word __hwcap-1b
++#endif
+diff --git a/src/setjmp/arm/setjmp.S b/src/setjmp/arm/setjmp.S
+index e28c7ad..78a2fd2 100644
+--- a/src/setjmp/arm/setjmp.S
++++ b/src/setjmp/arm/setjmp.S
+@@ -14,9 +14,13 @@ setjmp:
+ 	stmia ip!,{r2,lr}
+ 	mov r0,#0
+ 
++#ifdef __FDPIC__
++	mov r1,#0
++#else
+ 	adr r1,1f
+ 	ldr r2,1f
+ 	ldr r1,[r1,r2]
++#endif
+ 
+ #if __ARM_ARCH < 8
+ 	tst r1,#0x260
+@@ -46,6 +50,8 @@ setjmp:
+ 2:
+ 3:	bx lr
+ 
++#ifndef __FDPIC__
+ .hidden __hwcap
+ .align 2
+ 1:	.word __hwcap-1b
++#endif
+-- 
+2.49.0
