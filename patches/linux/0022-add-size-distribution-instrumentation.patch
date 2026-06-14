@@ -1,0 +1,128 @@
+From b7b8bcc604108dc4389bbf3f9cef42d0c9b8dd29 Mon Sep 17 00:00:00 2001
+From: Wilson Zeng <cheng20011202@gmail.com>
+Date: Sun, 14 Jun 2026 17:31:27 +0800
+Subject: [PATCH 2/4] mm/slub: add optional size instrumentation
+
+---
+ mm/Kconfig | 15 ++++++++++++
+ mm/slub.c  | 67 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 82 insertions(+)
+
+diff --git a/mm/Kconfig b/mm/Kconfig
+index 83ca0f663..27259d64c 100644
+--- a/mm/Kconfig
++++ b/mm/Kconfig
+@@ -219,6 +219,21 @@ config SLAB_MERGE_DEFAULT
+ 	  merging at runtime, "slab_nomerge" can be passed on the kernel
+ 	  command line.
+ 
++config SLUB_TINY_INST_SIZES
++	bool "SLUB_TINY allocation size histogram"
++	depends on SLUB_TINY_INSTRUMENTATION
++	default n
++	help
++	  Expose /proc/slub_tiny_sizes with cumulative requested and
++	  allocated bytes grouped by physical slot size.
++
++	  This adds a bucket lookup and three plain 32-bit updates to every
++	  successful allocation. Enable it only for size-class and internal
++	  fragmentation experiments; leave it disabled for latency,
++	  partial-slab and page-order measurements.
++
++	  If unsure, say N.
++
+ config SLAB_FREELIST_RANDOM
+ 	bool "Randomize slab freelist"
+ 	depends on !SLUB_TINY
+diff --git a/mm/slub.c b/mm/slub.c
+index 6a5c1c33f..b717a2037 100644
+--- a/mm/slub.c
++++ b/mm/slub.c
+@@ -3488,11 +3488,51 @@ static unsigned int slub_tiny_peak_inflight;
+ static unsigned int slub_tiny_live_pages;
+ static unsigned int slub_tiny_peak_live_pages;
+ 
++#ifdef CONFIG_SLUB_TINY_INST_SIZES
++#define SLUB_TINY_SIZE_BUCKETS 12
++
++static unsigned int slub_tiny_sz[SLUB_TINY_SIZE_BUCKETS];
++static unsigned int slub_tiny_sz_req[SLUB_TINY_SIZE_BUCKETS];
++static unsigned int slub_tiny_sz_alc[SLUB_TINY_SIZE_BUCKETS];
++
++static const unsigned int slub_tiny_size_max[SLUB_TINY_SIZE_BUCKETS] = {
++	32, 64, 96, 128, 192, 256,
++	512, 1024, 2048, 4096, 8192, UINT_MAX,
++};
++
++static const char * const slub_tiny_size_label[SLUB_TINY_SIZE_BUCKETS] = {
++	"slot-32",   "slot-64",   "slot-96",   "slot-128",
++	"slot-192",  "slot-256",  "slot-512",  "slot-1024",
++	"slot-2048", "slot-4096", "slot-8192", ">8192",
++};
++
++static inline unsigned int slub_tiny_size_bucket(unsigned int size)
++{
++	unsigned int i;
++
++	for (i = 0; i < SLUB_TINY_SIZE_BUCKETS - 1; i++)
++		if (size <= slub_tiny_size_max[i])
++			break;
++	return i;
++}
++#endif
++
+ static inline void slub_tiny_inst_alloc(struct kmem_cache *s, void *object,
+ 					size_t orig_size)
+ {
+ 	if (likely(object)) {
++#ifdef CONFIG_SLUB_TINY_INST_SIZES
++		unsigned int bucket = slub_tiny_size_bucket(s->size);
++		unsigned int req = orig_size ? (unsigned int)orig_size :
++					       s->object_size;
++#endif
++
+ 		slub_tiny_alloc++;
++#ifdef CONFIG_SLUB_TINY_INST_SIZES
++		slub_tiny_sz[bucket]++;
++		slub_tiny_sz_req[bucket] += req;
++		slub_tiny_sz_alc[bucket] += s->size;
++#endif
+ 		if (++slub_tiny_live > slub_tiny_peak_inflight)
+ 			slub_tiny_peak_inflight = slub_tiny_live;
+ 	} else {
+@@ -3591,6 +3631,33 @@ static int __init slub_tiny_freq_init(void)
+ 	return 0;
+ }
+ late_initcall(slub_tiny_freq_init);
++
++#ifdef CONFIG_SLUB_TINY_INST_SIZES
++static int slub_tiny_sizes_show(struct seq_file *m, void *v)
++{
++	u64 timestamp_ns = ktime_get_ns();
++	unsigned int i;
++
++	seq_printf(m, "timestamp_ns %llu\n",
++		   (unsigned long long)timestamp_ns);
++	seq_puts(m, "slot_class alloc requested_B allocated_B\n");
++	for (i = 0; i < SLUB_TINY_SIZE_BUCKETS; i++) {
++		seq_printf(m, "%s %u %u %u\n",
++			   slub_tiny_size_label[i],
++			   slub_tiny_sz[i], slub_tiny_sz_req[i],
++			   slub_tiny_sz_alc[i]);
++	}
++	return 0;
++}
++
++static int __init slub_tiny_sizes_init(void)
++{
++	proc_create_single("slub_tiny_sizes", 0444, NULL,
++			   slub_tiny_sizes_show);
++	return 0;
++}
++late_initcall(slub_tiny_sizes_init);
++#endif
+ #else
+ static inline void slub_tiny_inst_alloc(struct kmem_cache *s, void *object,
+ 					size_t orig_size) { }
+-- 
+2.54.0
