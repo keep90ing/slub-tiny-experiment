@@ -1,0 +1,101 @@
+From 3c7c72bb33dc30863cb68377fb94c6951447fbc2 Mon Sep 17 00:00:00 2001
+From: Wilson Zeng <cheng20011202@gmail.com>
+Date: Sun, 14 Jun 2026 17:31:29 +0800
+Subject: [PATCH 4/4] mm/slub: add optional raw fragmentation scan
+
+---
+ mm/Kconfig | 15 +++++++++++++++
+ mm/slub.c  | 52 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 67 insertions(+)
+
+diff --git a/mm/Kconfig b/mm/Kconfig
+index c0e0a63e3..6dfc901c7 100644
+--- a/mm/Kconfig
++++ b/mm/Kconfig
+@@ -249,6 +249,21 @@ config SLUB_TINY_INST_UTIL
+ 	  Enable this for page-efficiency, order and partial-slab studies.
+ 	  If unsure, say N.
+ 
++config SLUB_TINY_INST_FRAG
++	bool "SLUB_TINY partial-slab fragmentation scan"
++	depends on SLUB_TINY_INST_UTIL
++	default n
++	help
++	  Expose /proc/slub_tiny_frag with raw counts of retained empty
++	  slabs, non-empty partial slabs, partial slots and holes.
++
++	  This adds no allocation/free hot-path work. Reading the proc file
++	  scans partial slabs under the node list lock, so take snapshots
++	  outside the timed workload interval. Percentages are derived by
++	  host tooling.
++
++	  If unsure, say N.
++
+ config SLAB_FREELIST_RANDOM
+ 	bool "Randomize slab freelist"
+ 	depends on !SLUB_TINY
+diff --git a/mm/slub.c b/mm/slub.c
+index 8f7e78681..c0121f601 100644
+--- a/mm/slub.c
++++ b/mm/slub.c
+@@ -3729,6 +3729,58 @@ static int __init slub_tiny_util_init(void)
+ }
+ late_initcall(slub_tiny_util_init);
+ #endif
++
++#ifdef CONFIG_SLUB_TINY_INST_FRAG
++static int slub_tiny_frag_show(struct seq_file *m, void *v)
++{
++	u64 timestamp_ns = ktime_get_ns();
++	struct kmem_cache *s;
++
++	seq_printf(m, "timestamp_ns %llu\n",
++		   (unsigned long long)timestamp_ns);
++	seq_puts(m, "cache live_slabs empty_slabs nonempty_partial_slabs partial_slots holes\n");
++
++	mutex_lock(&slab_mutex);
++	list_for_each_entry(s, &slab_caches, list) {
++		unsigned long empty_slabs = 0;
++		unsigned long partial_slabs = 0;
++		unsigned long partial_slots = 0;
++		unsigned long holes = 0;
++		struct kmem_cache_node *n;
++		struct slab *slab;
++		unsigned long flags;
++		int node;
++
++		for_each_kmem_cache_node(s, node, n) {
++			spin_lock_irqsave(&n->list_lock, flags);
++			list_for_each_entry(slab, &n->partial, slab_list) {
++				if (!slab->inuse) {
++					empty_slabs++;
++					continue;
++				}
++				partial_slabs++;
++				partial_slots += slab->objects;
++				holes += slab->objects - slab->inuse;
++			}
++			spin_unlock_irqrestore(&n->list_lock, flags);
++		}
++
++		seq_printf(m, "%s %u %lu %lu %lu %lu\n",
++			   s->name, s->live_slabs, empty_slabs,
++			   partial_slabs, partial_slots, holes);
++	}
++	mutex_unlock(&slab_mutex);
++	return 0;
++}
++
++static int __init slub_tiny_frag_init(void)
++{
++	proc_create_single("slub_tiny_frag", 0444, NULL,
++			   slub_tiny_frag_show);
++	return 0;
++}
++late_initcall(slub_tiny_frag_init);
++#endif
+ #else
+ static inline void slub_tiny_inst_alloc(struct kmem_cache *s, void *object,
+ 					size_t orig_size) { }
+-- 
+2.54.0
