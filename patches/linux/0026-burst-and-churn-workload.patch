@@ -1,0 +1,352 @@
+From b3e57e942c4df1572eddae168cb34a9b03b69875 Mon Sep 17 00:00:00 2001
+From: Wilson Zeng <cheng20011202@gmail.com>
+Date: Sun, 14 Jun 2026 17:35:21 +0800
+Subject: [PATCH 2/5] mm: merge burst and churn SLUB_TINY workloads
+
+---
+ mm/Kconfig         |  12 ++
+ mm/Makefile        |   1 +
+ mm/slub_wl_churn.c | 297 +++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 310 insertions(+)
+ create mode 100644 mm/slub_wl_churn.c
+
+diff --git a/mm/Kconfig b/mm/Kconfig
+index adafeb1c7..365bed0b2 100644
+--- a/mm/Kconfig
++++ b/mm/Kconfig
+@@ -220,6 +220,18 @@ config SLUB_WL_SMALL
+ 
+ 	  If unsure, say N.
+ 
++config SLUB_WL_CHURN
++	bool "SLUB_TINY workload: burst and steady-state churn"
++	depends on SLUB_TINY && PROC_FS
++	default n
++	help
++	  Expose /proc/slub_wl_churn. One persistent 2048-entry live set
++	  supports burst allocation/release/drain phases and steady-state
++	  random free/refill churn. Split phases allow snapshots at the
++	  transient fragmentation peak.
++
++	  If unsure, say N.
++
+ config SLAB_MERGE_DEFAULT
+ 	bool "Allow slab caches to be merged"
+ 	default y
+diff --git a/mm/Makefile b/mm/Makefile
+index 3c6663ef3..44e964918 100644
+--- a/mm/Makefile
++++ b/mm/Makefile
+@@ -71,6 +71,7 @@ obj-y += memblock.o
+ obj-y += $(memory-hotplug-y)
+ obj-y += slub.o
+ obj-$(CONFIG_SLUB_WL_SMALL)	+= slub_wl_small.o
++obj-$(CONFIG_SLUB_WL_CHURN)	+= slub_wl_churn.o
+ 
+ ifdef CONFIG_MMU
+ 	obj-$(CONFIG_ADVISE_SYSCALLS)	+= madvise.o
+diff --git a/mm/slub_wl_churn.c b/mm/slub_wl_churn.c
+new file mode 100644
+index 000000000..971674781
+--- /dev/null
++++ b/mm/slub_wl_churn.c
+@@ -0,0 +1,297 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Combined burst and steady-state fragmentation workload.
++ *
++ * Protocol:
++ *   fill <count> <size>
++ *   release <stride> <order> [seed]
++ *   free <permille> <order> [seed]
++ *   refill
++ *   churn <rounds> <permille> <order> [seed]
++ *   drain [order]
++ *
++ * order: 0 = LIFO, 1 = FIFO, 2 = deterministic shuffle.
++ *
++ * fill/release/drain replaces the old burst driver. fill/free/refill and
++ * churn exercise transient and steady-state partial-slab fragmentation.
++ * The two modes share one 2048-entry pointer ring and one u16 victim array,
++ * about 12 KiB of static state on 32-bit ARM.
++ */
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/minmax.h>
++#include <linux/mutex.h>
++#include <linux/proc_fs.h>
++#include <linux/slab.h>
++#include <linux/string.h>
++#include <linux/uaccess.h>
++
++#define CHURN_CAP		2048U
++#define CHURN_BYTES_MAX		(2U << 20)
++#define CHURN_MAX_ROUNDS	1024U
++#define CHURN_DEFAULT_SEED	0xDEADBEEFU
++
++enum churn_free_order {
++	CHURN_LIFO = 0,
++	CHURN_FIFO = 1,
++	CHURN_RANDOM = 2,
++};
++
++static void *churn_ring[CHURN_CAP];
++static u16 churn_victims[CHURN_CAP];
++static unsigned int churn_live;
++static unsigned int churn_size;
++static unsigned int churn_target;
++static unsigned int churn_state = CHURN_DEFAULT_SEED;
++static DEFINE_MUTEX(churn_lock);
++
++static unsigned int churn_random(void)
++{
++	churn_state = churn_state * 1103515245U + 12345U;
++	return churn_state;
++}
++
++static void shuffle_victims(unsigned int count)
++{
++	unsigned int i;
++
++	for (i = count; i > 1; i--) {
++		unsigned int j = churn_random() % i;
++
++		swap(churn_victims[i - 1], churn_victims[j]);
++	}
++}
++
++static void free_victims(unsigned int count, unsigned int order)
++{
++	unsigned int i;
++
++	if (order == CHURN_RANDOM)
++		shuffle_victims(count);
++
++	for (i = 0; i < count; i++) {
++		unsigned int index = order == CHURN_LIFO ?
++				     churn_victims[count - 1 - i] :
++				     churn_victims[i];
++
++		kfree(churn_ring[index]);
++		churn_ring[index] = NULL;
++	}
++}
++
++static unsigned int collect_all(void)
++{
++	unsigned int i;
++	unsigned int count = 0;
++
++	for (i = 0; i < CHURN_CAP; i++)
++		if (churn_ring[i])
++			churn_victims[count++] = i;
++	return count;
++}
++
++static unsigned int drain_locked(unsigned int order)
++{
++	unsigned int count = collect_all();
++
++	free_victims(count, order);
++	churn_live = 0;
++	churn_size = 0;
++	churn_target = 0;
++	return count;
++}
++
++static unsigned int fill_locked(unsigned int count, unsigned int size)
++{
++	unsigned int i;
++
++	drain_locked(CHURN_FIFO);
++	churn_state = CHURN_DEFAULT_SEED;
++	churn_size = size;
++	count = min_t(unsigned int, count, CHURN_CAP);
++
++	for (i = 0; i < count; i++) {
++		churn_ring[i] = kmalloc(size, GFP_KERNEL);
++		if (!churn_ring[i])
++			break;
++	}
++	churn_live = i;
++	churn_target = i;
++	return i;
++}
++
++static unsigned int collect_random(unsigned int permille)
++{
++	unsigned int i;
++	unsigned int count = 0;
++
++	for (i = 0; i < CHURN_CAP; i++) {
++		if (!churn_ring[i])
++			continue;
++		if (churn_random() % 1000 < permille)
++			churn_victims[count++] = i;
++	}
++	return count;
++}
++
++static unsigned int release_stride_locked(unsigned int stride,
++					  unsigned int order)
++{
++	unsigned int i;
++	unsigned int ordinal = 0;
++	unsigned int count = 0;
++
++	if (!stride)
++		return drain_locked(order);
++	if (stride == 1)
++		return 0;
++
++	for (i = 0; i < CHURN_CAP; i++) {
++		if (!churn_ring[i])
++			continue;
++		if (ordinal++ % stride)
++			churn_victims[count++] = i;
++	}
++	free_victims(count, order);
++	churn_live -= count;
++	return count;
++}
++
++static unsigned int free_random_locked(unsigned int permille,
++				       unsigned int order)
++{
++	unsigned int count = collect_random(permille);
++
++	free_victims(count, order);
++	churn_live -= count;
++	return count;
++}
++
++static unsigned int refill_locked(void)
++{
++	unsigned int i;
++	unsigned int count = 0;
++
++	if (!churn_size)
++		return 0;
++
++	for (i = 0; i < CHURN_CAP && churn_live < churn_target; i++) {
++		if (churn_ring[i])
++			continue;
++		churn_ring[i] = kmalloc(churn_size, GFP_KERNEL);
++		if (!churn_ring[i])
++			break;
++		churn_live++;
++		count++;
++	}
++	return count;
++}
++
++static unsigned int churn_locked(unsigned int rounds,
++				 unsigned int permille,
++				 unsigned int order)
++{
++	unsigned int round;
++	unsigned int replaced = 0;
++
++	for (round = 0; round < rounds; round++) {
++		replaced += free_random_locked(permille, order);
++		refill_locked();
++	}
++	return replaced;
++}
++
++static ssize_t slub_wl_churn_write(struct file *file,
++				   const char __user *buffer,
++				   size_t length, loff_t *position)
++{
++	char input[64];
++	char verb[8];
++	unsigned int a = 0;
++	unsigned int b = 0;
++	unsigned int c = 0;
++	unsigned int seed = CHURN_DEFAULT_SEED;
++	unsigned int result;
++	int parsed;
++
++	if (!length || length >= sizeof(input))
++		return -EINVAL;
++	if (copy_from_user(input, buffer, length))
++		return -EFAULT;
++	input[length] = '\0';
++
++	parsed = sscanf(input, "%7s %u %u %u %u",
++			verb, &a, &b, &c, &seed);
++	if (parsed < 1)
++		return -EINVAL;
++
++	mutex_lock(&churn_lock);
++	if (!strcmp(verb, "fill")) {
++		if (parsed != 3 || !a || !b ||
++		    b > KMALLOC_MAX_CACHE_SIZE ||
++		    (u64)a * b > CHURN_BYTES_MAX)
++			goto invalid;
++		result = fill_locked(a, b);
++		pr_info("slub_wl_churn: fill count=%u size=%u live=%u\n",
++			result, b, churn_live);
++	} else if (!strcmp(verb, "release")) {
++		if (parsed < 2 || (parsed >= 3 && b > CHURN_RANDOM))
++			goto invalid;
++		if (parsed < 3)
++			b = CHURN_FIFO;
++		if (parsed >= 4)
++			churn_state = c;
++		result = release_stride_locked(a, b);
++		pr_info("slub_wl_churn: release stride=%u order=%u freed=%u live=%u\n",
++			a, b, result, churn_live);
++	} else if (!strcmp(verb, "free")) {
++		if (parsed < 3 || a > 1000 || b > CHURN_RANDOM)
++			goto invalid;
++		if (parsed >= 4)
++			churn_state = c;
++		result = free_random_locked(a, b);
++		pr_info("slub_wl_churn: free permille=%u order=%u freed=%u live=%u\n",
++			a, b, result, churn_live);
++	} else if (!strcmp(verb, "refill")) {
++		if (parsed != 1)
++			goto invalid;
++		result = refill_locked();
++		pr_info("slub_wl_churn: refill allocated=%u live=%u\n",
++			result, churn_live);
++	} else if (!strcmp(verb, "churn")) {
++		if (parsed < 4 || !a || a > CHURN_MAX_ROUNDS ||
++		    b > 1000 || c > CHURN_RANDOM)
++			goto invalid;
++		if (parsed >= 5)
++			churn_state = seed;
++		result = churn_locked(a, b, c);
++		pr_info("slub_wl_churn: rounds=%u permille=%u order=%u replaced=%u live=%u\n",
++			a, b, c, result, churn_live);
++	} else if (!strcmp(verb, "drain")) {
++		if (parsed >= 2 && a > CHURN_RANDOM)
++			goto invalid;
++		if (parsed < 2)
++			a = CHURN_FIFO;
++		result = drain_locked(a);
++		pr_info("slub_wl_churn: drain order=%u freed=%u\n", a, result);
++	} else {
++		goto invalid;
++	}
++	mutex_unlock(&churn_lock);
++	return length;
++
++invalid:
++	mutex_unlock(&churn_lock);
++	return -EINVAL;
++}
++
++static const struct proc_ops slub_wl_churn_ops = {
++	.proc_write = slub_wl_churn_write,
++};
++
++static int __init slub_wl_churn_init(void)
++{
++	proc_create("slub_wl_churn", 0200, NULL, &slub_wl_churn_ops);
++	return 0;
++}
++late_initcall(slub_wl_churn_init);
+-- 
+2.54.0
