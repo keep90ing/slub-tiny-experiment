@@ -1,0 +1,307 @@
+From 9c0b65520b550d6e423be2b7932c82596dab01de Mon Sep 17 00:00:00 2001
+From: Wilson Zeng <cheng20011202@gmail.com>
+Date: Sun, 14 Jun 2026 17:35:22 +0800
+Subject: [PATCH 3/5] mm: make mixed-lifetime workload intrusive and bucketed
+
+---
+ mm/Kconfig           |  12 +++
+ mm/Makefile          |   1 +
+ mm/slub_wl_mixlife.c | 252 +++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 265 insertions(+)
+ create mode 100644 mm/slub_wl_mixlife.c
+
+diff --git a/mm/Kconfig b/mm/Kconfig
+index 365bed0b2..5f8c6206f 100644
+--- a/mm/Kconfig
++++ b/mm/Kconfig
+@@ -232,6 +232,18 @@ config SLUB_WL_CHURN
+ 
+ 	  If unsure, say N.
+ 
++config SLUB_WL_MIXLIFE
++	bool "SLUB_TINY workload: cross-class mixed lifetimes"
++	depends on SLUB_TINY && PROC_FS
++	default n
++	help
++	  Expose /proc/slub_wl_mixlife. Allocation metadata is intrusive
++	  and short lifetimes use a 64-bucket expiry wheel, avoiding a
++	  full live-set scan on every step. The final resident set remains
++	  allocated until an explicit drain for fragmentation snapshots.
++
++	  If unsure, say N.
++
+ config SLAB_MERGE_DEFAULT
+ 	bool "Allow slab caches to be merged"
+ 	default y
+diff --git a/mm/Makefile b/mm/Makefile
+index 44e964918..d0ee644ae 100644
+--- a/mm/Makefile
++++ b/mm/Makefile
+@@ -72,6 +72,7 @@ obj-y += $(memory-hotplug-y)
+ obj-y += slub.o
+ obj-$(CONFIG_SLUB_WL_SMALL)	+= slub_wl_small.o
+ obj-$(CONFIG_SLUB_WL_CHURN)	+= slub_wl_churn.o
++obj-$(CONFIG_SLUB_WL_MIXLIFE)	+= slub_wl_mixlife.o
+ 
+ ifdef CONFIG_MMU
+ 	obj-$(CONFIG_ADVISE_SYSCALLS)	+= madvise.o
+diff --git a/mm/slub_wl_mixlife.c b/mm/slub_wl_mixlife.c
+new file mode 100644
+index 000000000..84d977b78
+--- /dev/null
++++ b/mm/slub_wl_mixlife.c
+@@ -0,0 +1,252 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Cross-class heavy-tailed lifetime workload.
++ *
++ * Protocol:
++ *   run <steps> [seed]   drain old state, run, retain the final live set
++ *   step <steps>         continue the current deterministic stream
++ *   drain                free the resident set
++ *
++ * Bookkeeping is stored inside each allocated object. Short-lived objects
++ * are linked into a 64-bucket expiry wheel, so each step touches only the
++ * objects that expire at that step rather than scanning the full live set.
++ * One eighth of allocations are long-lived and remain until eviction or
++ * drain, creating the sparse survivors needed for fragmentation studies.
++ */
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/list.h>
++#include <linux/minmax.h>
++#include <linux/mutex.h>
++#include <linux/proc_fs.h>
++#include <linux/slab.h>
++#include <linux/string.h>
++#include <linux/uaccess.h>
++
++#define MIXLIFE_CAP		2048U
++#define MIXLIFE_MAX_STEPS	(1U << 20)
++#define MIXLIFE_WHEEL_SIZE	64U
++#define MIXLIFE_DEFAULT_SEED	0xA5A5F00DU
++
++struct mixlife_object {
++	struct list_head all;
++	struct hlist_node expiry;
++	unsigned int expires;
++};
++
++static const unsigned int mixlife_sizes[] = {
++	32, 64, 96, 128, 192, 256, 512, 1024,
++};
++
++static const unsigned char mixlife_weights[] = {
++	40, 25, 12, 10, 6, 4, 2, 1,
++};
++
++static LIST_HEAD(mixlife_objects);
++static struct hlist_head mixlife_wheel[MIXLIFE_WHEEL_SIZE];
++static unsigned int mixlife_state = MIXLIFE_DEFAULT_SEED;
++static unsigned int mixlife_now;
++static unsigned int mixlife_live;
++static unsigned int mixlife_peak;
++static DEFINE_MUTEX(mixlife_lock);
++
++static unsigned int mixlife_random(void)
++{
++	mixlife_state = mixlife_state * 1103515245U + 12345U;
++	return mixlife_state;
++}
++
++static unsigned int pick_class(void)
++{
++	unsigned int total = 0;
++	unsigned int accumulated = 0;
++	unsigned int random;
++	unsigned int i;
++
++	for (i = 0; i < ARRAY_SIZE(mixlife_weights); i++)
++		total += mixlife_weights[i];
++	random = mixlife_random() % total;
++
++	for (i = 0; i < ARRAY_SIZE(mixlife_weights); i++) {
++		accumulated += mixlife_weights[i];
++		if (random < accumulated)
++			return i;
++	}
++	return ARRAY_SIZE(mixlife_weights) - 1;
++}
++
++static void free_object(struct mixlife_object *object)
++{
++	if (!hlist_unhashed(&object->expiry))
++		hlist_del_init(&object->expiry);
++	list_del(&object->all);
++	kfree(object);
++	mixlife_live--;
++}
++
++static void expire_current_bucket(void)
++{
++	struct mixlife_object *object;
++	struct hlist_node *next;
++	unsigned int bucket = mixlife_now & (MIXLIFE_WHEEL_SIZE - 1);
++
++	hlist_for_each_entry_safe(object, next, &mixlife_wheel[bucket],
++				  expiry) {
++		if (object->expires <= mixlife_now)
++			free_object(object);
++	}
++}
++
++static void evict_short_lived(void)
++{
++	unsigned int offset;
++
++	for (offset = 0; offset < MIXLIFE_WHEEL_SIZE; offset++) {
++		unsigned int bucket =
++			(mixlife_now + offset) & (MIXLIFE_WHEEL_SIZE - 1);
++		struct mixlife_object *object;
++
++		object = hlist_entry_safe(mixlife_wheel[bucket].first,
++					 struct mixlife_object, expiry);
++		if (object) {
++			free_object(object);
++			return;
++		}
++	}
++
++	if (!list_empty(&mixlife_objects))
++		free_object(list_first_entry(&mixlife_objects,
++					     struct mixlife_object, all));
++}
++
++static bool allocate_object(void)
++{
++	struct mixlife_object *object;
++	unsigned int class = pick_class();
++	unsigned int lifetime_random = mixlife_random();
++
++	object = kmalloc(mixlife_sizes[class], GFP_KERNEL);
++	if (!object)
++		return false;
++
++	INIT_LIST_HEAD(&object->all);
++	INIT_HLIST_NODE(&object->expiry);
++	list_add_tail(&object->all, &mixlife_objects);
++
++	if ((lifetime_random >> 16) & 7) {
++		unsigned int lifetime = 1 + ((lifetime_random >> 19) %
++					     MIXLIFE_WHEEL_SIZE);
++
++		object->expires = mixlife_now + lifetime;
++		hlist_add_head(&object->expiry,
++			       &mixlife_wheel[object->expires &
++					      (MIXLIFE_WHEEL_SIZE - 1)]);
++	} else {
++		object->expires = UINT_MAX;
++	}
++
++	mixlife_live++;
++	mixlife_peak = max(mixlife_peak, mixlife_live);
++	return true;
++}
++
++static unsigned int run_steps(unsigned int steps)
++{
++	unsigned int completed;
++
++	for (completed = 0; completed < steps; completed++) {
++		mixlife_now++;
++		expire_current_bucket();
++		if (mixlife_live >= MIXLIFE_CAP)
++			evict_short_lived();
++		if (!allocate_object())
++			break;
++	}
++	return completed;
++}
++
++static unsigned int drain_locked(void)
++{
++	struct mixlife_object *object;
++	struct mixlife_object *next;
++	unsigned int count = mixlife_live;
++	unsigned int i;
++
++	list_for_each_entry_safe(object, next, &mixlife_objects, all)
++		free_object(object);
++	for (i = 0; i < MIXLIFE_WHEEL_SIZE; i++)
++		INIT_HLIST_HEAD(&mixlife_wheel[i]);
++	INIT_LIST_HEAD(&mixlife_objects);
++	mixlife_now = 0;
++	mixlife_peak = 0;
++	return count;
++}
++
++static ssize_t slub_wl_mixlife_write(struct file *file,
++				     const char __user *buffer,
++				     size_t length, loff_t *position)
++{
++	char input[48];
++	char verb[8];
++	unsigned int steps = 0;
++	unsigned int seed = MIXLIFE_DEFAULT_SEED;
++	unsigned int completed;
++	int parsed;
++
++	if (!length || length >= sizeof(input))
++		return -EINVAL;
++	if (copy_from_user(input, buffer, length))
++		return -EFAULT;
++	input[length] = '\0';
++
++	parsed = sscanf(input, "%7s %u %u", verb, &steps, &seed);
++	if (parsed < 1)
++		return -EINVAL;
++
++	mutex_lock(&mixlife_lock);
++	if (!strcmp(verb, "run")) {
++		if (parsed < 2 || !steps || steps > MIXLIFE_MAX_STEPS)
++			goto invalid;
++		drain_locked();
++		mixlife_state = parsed >= 3 ? seed : MIXLIFE_DEFAULT_SEED;
++		completed = run_steps(steps);
++		pr_info("slub_wl_mixlife: run requested=%u completed=%u live=%u peak=%u seed=0x%08x\n",
++			steps, completed, mixlife_live, mixlife_peak,
++			mixlife_state);
++	} else if (!strcmp(verb, "step")) {
++		if (parsed != 2 || !steps || steps > MIXLIFE_MAX_STEPS)
++			goto invalid;
++		completed = run_steps(steps);
++		pr_info("slub_wl_mixlife: step requested=%u completed=%u live=%u peak=%u\n",
++			steps, completed, mixlife_live, mixlife_peak);
++	} else if (!strcmp(verb, "drain")) {
++		if (parsed != 1)
++			goto invalid;
++		completed = drain_locked();
++		pr_info("slub_wl_mixlife: drain freed=%u\n", completed);
++	} else {
++		goto invalid;
++	}
++	mutex_unlock(&mixlife_lock);
++	return length;
++
++invalid:
++	mutex_unlock(&mixlife_lock);
++	return -EINVAL;
++}
++
++static const struct proc_ops slub_wl_mixlife_ops = {
++	.proc_write = slub_wl_mixlife_write,
++};
++
++static int __init slub_wl_mixlife_init(void)
++{
++	unsigned int i;
++
++	BUILD_BUG_ON(sizeof(struct mixlife_object) > 32);
++	for (i = 0; i < MIXLIFE_WHEEL_SIZE; i++)
++		INIT_HLIST_HEAD(&mixlife_wheel[i]);
++	proc_create("slub_wl_mixlife", 0200, NULL, &slub_wl_mixlife_ops);
++	return 0;
++}
++late_initcall(slub_wl_mixlife_init);
+-- 
+2.54.0
