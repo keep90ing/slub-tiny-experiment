@@ -1,0 +1,203 @@
+From 834cef068790a776f00e3798a933d563aaf831a8 Mon Sep 17 00:00:00 2001
+From: Wilson Zeng <cheng20011202@gmail.com>
+Date: Sun, 14 Jun 2026 17:35:23 +0800
+Subject: [PATCH 4/5] mm: make SLUB_TINY capacity probe intrusive
+
+---
+ mm/Kconfig       |  12 +++++
+ mm/Makefile      |   1 +
+ mm/slub_wl_oom.c | 148 ++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 161 insertions(+)
+ create mode 100644 mm/slub_wl_oom.c
+
+diff --git a/mm/Kconfig b/mm/Kconfig
+index 5f8c6206f..9c848013d 100644
+--- a/mm/Kconfig
++++ b/mm/Kconfig
+@@ -244,6 +244,18 @@ config SLUB_WL_MIXLIFE
+ 
+ 	  If unsure, say N.
+ 
++config SLUB_WL_OOM
++	bool "SLUB_TINY workload: capacity headroom probe"
++	depends on SLUB_TINY && PROC_FS
++	default n
++	help
++	  Expose /proc/slub_wl_oom. Each allocated object stores the next
++	  pointer in its own first word, so the probe consumes no large
++	  pointer array. The result reports live objects while retaining a
++	  fixed amount of free memory for measurement and cleanup.
++
++	  If unsure, say N.
++
+ config SLAB_MERGE_DEFAULT
+ 	bool "Allow slab caches to be merged"
+ 	default y
+diff --git a/mm/Makefile b/mm/Makefile
+index d0ee644ae..f56fd850d 100644
+--- a/mm/Makefile
++++ b/mm/Makefile
+@@ -73,6 +73,7 @@ obj-y += slub.o
+ obj-$(CONFIG_SLUB_WL_SMALL)	+= slub_wl_small.o
+ obj-$(CONFIG_SLUB_WL_CHURN)	+= slub_wl_churn.o
+ obj-$(CONFIG_SLUB_WL_MIXLIFE)	+= slub_wl_mixlife.o
++obj-$(CONFIG_SLUB_WL_OOM)	+= slub_wl_oom.o
+ 
+ ifdef CONFIG_MMU
+ 	obj-$(CONFIG_ADVISE_SYSCALLS)	+= madvise.o
+diff --git a/mm/slub_wl_oom.c b/mm/slub_wl_oom.c
+new file mode 100644
+index 000000000..77f7bfd01
+--- /dev/null
++++ b/mm/slub_wl_oom.c
+@@ -0,0 +1,148 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * End-to-end capacity headroom probe.
++ *
++ * Protocol:
++ *   echo "fill <size>" > /proc/slub_wl_oom
++ *   echo "drain" > /proc/slub_wl_oom
++ *
++ * The first machine word of every allocated object links to the previous
++ * object. This removes the old 768 KiB pointer array from an 8 MiB capacity
++ * measurement. Fill retains a fixed system headroom and keeps the intrusive
++ * list until a separate drain command. This lets userspace snapshot and
++ * release the capacity state without triggering the OOM killer.
++ */
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/mm.h>
++#include <linux/mutex.h>
++#include <linux/proc_fs.h>
++#include <linux/sched.h>
++#include <linux/slab.h>
++#include <linux/uaccess.h>
++#include <linux/vmstat.h>
++
++#define OOM_PROBE_RESERVE_PAGES	160UL
++
++static DEFINE_MUTEX(oom_probe_lock);
++static void *oom_probe_head;
++static unsigned int oom_probe_count;
++static unsigned int oom_probe_size;
++static unsigned long oom_probe_free_pages;
++static bool oom_probe_alloc_failed;
++
++static int fill_probe(unsigned int size)
++{
++	void *head = NULL;
++	unsigned int count = 0;
++
++	if (oom_probe_head)
++		return -EBUSY;
++
++	for (;;) {
++		void *object;
++
++		if (global_zone_page_state(NR_FREE_PAGES) <=
++		    OOM_PROBE_RESERVE_PAGES)
++			break;
++		object = kmalloc(size, GFP_KERNEL | __GFP_NOWARN |
++				      __GFP_NORETRY | __GFP_NOMEMALLOC);
++		if (!object) {
++			oom_probe_alloc_failed = true;
++			break;
++		}
++		*(void **)object = head;
++		head = object;
++		count++;
++		if (!(count & 1023))
++			cond_resched();
++	}
++
++	oom_probe_head = head;
++	oom_probe_count = count;
++	oom_probe_size = size;
++	oom_probe_free_pages = global_zone_page_state(NR_FREE_PAGES);
++	return 0;
++}
++
++static unsigned int drain_probe(void)
++{
++	unsigned int count = oom_probe_count;
++
++	while (oom_probe_head) {
++		void *next = *(void **)oom_probe_head;
++
++		kfree(oom_probe_head);
++		oom_probe_head = next;
++	}
++	oom_probe_count = 0;
++	oom_probe_size = 0;
++	oom_probe_free_pages = 0;
++	oom_probe_alloc_failed = false;
++	return count;
++}
++
++static ssize_t slub_wl_oom_write(struct file *file,
++				 const char __user *buffer,
++				 size_t length, loff_t *position)
++{
++	char input[32];
++	char command[16];
++	unsigned int size;
++	unsigned int drained;
++	int parsed;
++	int ret = 0;
++
++	if (!length || length >= sizeof(input))
++		return -EINVAL;
++	if (copy_from_user(input, buffer, length))
++		return -EFAULT;
++	input[length] = '\0';
++
++	parsed = sscanf(input, "%15s %u", command, &size);
++	if (parsed < 1)
++		return -EINVAL;
++
++	mutex_lock(&oom_probe_lock);
++	if (!strcmp(command, "fill")) {
++		if (parsed != 2 || size < sizeof(void *) ||
++		    size > KMALLOC_MAX_CACHE_SIZE) {
++			ret = -EINVAL;
++			goto out;
++		}
++		ret = fill_probe(size);
++		if (!ret)
++			pr_info("slub_wl_oom: phase=fill size=%u max_live=%u requested_bytes=%llu free_pages_at_stop=%lu reserve_pages=%lu stop=%s held=1\n",
++				oom_probe_size, oom_probe_count,
++				(unsigned long long)oom_probe_count *
++				oom_probe_size, oom_probe_free_pages,
++				OOM_PROBE_RESERVE_PAGES,
++				oom_probe_alloc_failed ? "alloc_fail" :
++				"headroom");
++	} else if (!strcmp(command, "drain")) {
++		if (parsed != 1) {
++			ret = -EINVAL;
++			goto out;
++		}
++		drained = drain_probe();
++		pr_info("slub_wl_oom: phase=drain freed=%u held=0\n",
++			drained);
++	} else {
++		ret = -EINVAL;
++	}
++
++out:
++	mutex_unlock(&oom_probe_lock);
++	return ret ? ret : length;
++}
++
++static const struct proc_ops slub_wl_oom_ops = {
++	.proc_write = slub_wl_oom_write,
++};
++
++static int __init slub_wl_oom_init(void)
++{
++	proc_create("slub_wl_oom", 0200, NULL, &slub_wl_oom_ops);
++	return 0;
++}
++late_initcall(slub_wl_oom_init);
+-- 
+2.54.0
