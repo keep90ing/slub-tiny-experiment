@@ -1,0 +1,208 @@
+From fece87f57ce8c386cdf651adf69b592cc6155402 Mon Sep 17 00:00:00 2001
+From: Wilson Zeng <cheng20011202@gmail.com>
+Date: Sun, 14 Jun 2026 17:31:25 +0800
+Subject: [PATCH 1/4] mm/slub: add lightweight SLUB_TINY frequency core
+
+---
+ mm/Kconfig |  19 ++++++++
+ mm/slub.c  | 127 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 146 insertions(+)
+
+diff --git a/mm/Kconfig b/mm/Kconfig
+index ebd8ea353..83ca0f663 100644
+--- a/mm/Kconfig
++++ b/mm/Kconfig
+@@ -186,6 +186,25 @@ config SLUB_TINY
+ 
+ 	   If unsure, say N.
+ 
++config SLUB_TINY_INSTRUMENTATION
++	bool "SLUB_TINY frequency instrumentation"
++	depends on SLUB_TINY && PROC_FS
++	default n
++	help
++	  Expose /proc/slub_tiny_freq with cumulative allocation/free and
++	  slab birth/death counters, object and page high-water marks, and
++	  a timestamp for narrowly bracketing a workload.
++
++	  This is the common lightweight core for the optional size,
++	  utilization and fragmentation instrumentation added by later
++	  patches. The object hot path gains plain 32-bit counter updates;
++	  slab page accounting runs only on slab birth/death.
++
++	  Disable this option in pure latency images and time the workload
++	  internally, so the measurement does not include observer cost.
++
++	  If unsure, say N.
++
+ config SLAB_MERGE_DEFAULT
+ 	bool "Allow slab caches to be merged"
+ 	default y
+diff --git a/mm/slub.c b/mm/slub.c
+index 2b2d33cc7..6a5c1c33f 100644
+--- a/mm/slub.c
++++ b/mm/slub.c
+@@ -3426,6 +3426,125 @@ static inline bool shuffle_freelist(struct kmem_cache *s, struct slab *slab,
+ }
+ #endif /* CONFIG_SLAB_FREELIST_RANDOM */
+ 
++#ifdef CONFIG_SLUB_TINY_INSTRUMENTATION
++static unsigned int slub_tiny_alloc;
++static unsigned int slub_tiny_alloc_fail;
++static unsigned int slub_tiny_free;
++static unsigned int slub_tiny_slab_alloc;
++static unsigned int slub_tiny_slab_free;
++static unsigned int slub_tiny_live;
++static unsigned int slub_tiny_peak_inflight;
++static unsigned int slub_tiny_live_pages;
++static unsigned int slub_tiny_peak_live_pages;
++
++static inline void slub_tiny_inst_alloc(struct kmem_cache *s, void *object,
++					size_t orig_size)
++{
++	if (likely(object)) {
++		slub_tiny_alloc++;
++		if (++slub_tiny_live > slub_tiny_peak_inflight)
++			slub_tiny_peak_inflight = slub_tiny_live;
++	} else {
++		slub_tiny_alloc_fail++;
++	}
++}
++
++static inline void slub_tiny_inst_free(struct kmem_cache *s)
++{
++	slub_tiny_free++;
++	slub_tiny_live--;
++}
++
++static inline void slub_tiny_inst_slab_alloc(struct kmem_cache *s,
++					     struct slab *slab)
++{
++	unsigned int pages = 1U << slab_order(slab);
++
++	slub_tiny_slab_alloc++;
++	slub_tiny_live_pages += pages;
++	if (slub_tiny_live_pages > slub_tiny_peak_live_pages)
++		slub_tiny_peak_live_pages = slub_tiny_live_pages;
++}
++
++static inline void slub_tiny_inst_slab_free(struct kmem_cache *s,
++					    struct slab *slab)
++{
++	slub_tiny_slab_free++;
++	slub_tiny_live_pages -= 1U << slab_order(slab);
++}
++
++static void slub_tiny_inst_rebase(void)
++{
++	slub_tiny_peak_inflight = slub_tiny_live;
++	slub_tiny_peak_live_pages = slub_tiny_live_pages;
++}
++
++static int slub_tiny_freq_show(struct seq_file *m, void *v)
++{
++	u64 timestamp_ns = ktime_get_ns();
++
++	seq_printf(m, "alloc %u\n", slub_tiny_alloc);
++	seq_printf(m, "free %u\n", slub_tiny_free);
++	seq_printf(m, "alloc_fail %u\n", slub_tiny_alloc_fail);
++	seq_printf(m, "timestamp_ns %llu\n",
++		   (unsigned long long)timestamp_ns);
++	seq_printf(m, "slab_alloc %u\n", slub_tiny_slab_alloc);
++	seq_printf(m, "slab_free %u\n", slub_tiny_slab_free);
++	seq_printf(m, "inflight %u\n", slub_tiny_live);
++	seq_printf(m, "peak_inflight %u\n", slub_tiny_peak_inflight);
++	seq_printf(m, "live_pages %u\n", slub_tiny_live_pages);
++	seq_printf(m, "peak_live_pages %u\n",
++		   slub_tiny_peak_live_pages);
++	return 0;
++}
++
++static int slub_tiny_freq_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, slub_tiny_freq_show, NULL);
++}
++
++static ssize_t slub_tiny_freq_write(struct file *file,
++				    const char __user *ubuf, size_t len,
++				    loff_t *pos)
++{
++	char kbuf[16];
++
++	if (len == 0 || len >= sizeof(kbuf))
++		return -EINVAL;
++	if (copy_from_user(kbuf, ubuf, len))
++		return -EFAULT;
++	kbuf[len] = '\0';
++
++	if (!sysfs_streq(kbuf, "reset"))
++		return -EINVAL;
++	slub_tiny_inst_rebase();
++	return len;
++}
++
++static const struct proc_ops slub_tiny_freq_ops = {
++	.proc_open	= slub_tiny_freq_open,
++	.proc_read	= seq_read,
++	.proc_lseek	= seq_lseek,
++	.proc_release	= single_release,
++	.proc_write	= slub_tiny_freq_write,
++};
++
++static int __init slub_tiny_freq_init(void)
++{
++	proc_create("slub_tiny_freq", 0644, NULL, &slub_tiny_freq_ops);
++	return 0;
++}
++late_initcall(slub_tiny_freq_init);
++#else
++static inline void slub_tiny_inst_alloc(struct kmem_cache *s, void *object,
++					size_t orig_size) { }
++static inline void slub_tiny_inst_free(struct kmem_cache *s) { }
++static inline void slub_tiny_inst_slab_alloc(struct kmem_cache *s,
++					     struct slab *slab) { }
++static inline void slub_tiny_inst_slab_free(struct kmem_cache *s,
++					    struct slab *slab) { }
++#endif
++
+ static __always_inline void account_slab(struct slab *slab, int order,
+ 					 struct kmem_cache *s, gfp_t gfp)
+ {
+@@ -3526,6 +3645,8 @@ static struct slab *allocate_slab(struct kmem_cache *s, gfp_t flags, int node)
+ 		set_freepointer(s, p, NULL);
+ 	}
+ 
++	slub_tiny_inst_slab_alloc(s, slab);
++
+ 	return slab;
+ }
+ 
+@@ -3546,6 +3667,8 @@ static void __free_slab(struct kmem_cache *s, struct slab *slab, bool allow_spin
+ 	int order = compound_order(page);
+ 	int pages = 1 << order;
+ 
++	slub_tiny_inst_slab_free(s, slab);
++
+ 	__slab_clear_pfmemalloc(slab);
+ 	page->mapping = NULL;
+ 	__ClearPageSlab(page);
+@@ -4865,6 +4988,8 @@ static __fastpath_inline void *slab_alloc_node(struct kmem_cache *s, struct list
+ 	 */
+ 	slab_post_alloc_hook(s, lru, gfpflags, 1, &object, init, orig_size);
+ 
++	slub_tiny_inst_alloc(s, object, orig_size);
++
+ 	return object;
+ }
+ 
+@@ -6159,6 +6284,8 @@ static __fastpath_inline
+ void slab_free(struct kmem_cache *s, struct slab *slab, void *object,
+ 	       unsigned long addr)
+ {
++	slub_tiny_inst_free(s);
++
+ 	memcg_slab_free_hook(s, slab, &object, 1);
+ 	alloc_tagging_slab_free_hook(s, slab, &object, 1);
+ 
+-- 
+2.54.0
