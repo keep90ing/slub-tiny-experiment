@@ -23,11 +23,21 @@ int main()
 {
     printf("Mounting rootfs\n");
     mount("proc", "/proc", "proc", 0, NULL);
-    while (mount("/dev/mmcblk0p1", MOUNT_POINT, "ext2", 0, 0));
+    printf("Waiting for /dev/mmcblk0p1\n");
+    while (access("/dev/mmcblk0p1", F_OK) != 0)
+        usleep(100000);
+
+    while (mount("/dev/mmcblk0p1", MOUNT_POINT, "ext2", 0, 0)) {
+        perror("mount /dev/mmcblk0p1");
+        sleep(1);
+    }
     print_meminfo();
     char *argv[] = { "sh", NULL };
     char *envp[] = {
-        "PATH=" MOUNT_POINT "/bin",
+        "PATH=" MOUNT_POINT "/bin:"
+               MOUNT_POINT "/sbin:"
+               MOUNT_POINT "/usr/bin:"
+               MOUNT_POINT "/usr/sbin",
         "HOME=" MOUNT_POINT,
         "TSLIB_CALIBFILE=" MOUNT_POINT "/etc/pointercal",
         "TSLIB_CONFFILE=" MOUNT_POINT "/etc/ts.conf",

@@ -64,7 +64,7 @@ index ded369abe..bcc99716b 100644
 +	pinctrl-1 = <&sdio_pins_od>;
 +	bus-width = <1>;
 +	max-frequency = <1000000>;
-+	broken-cd;
++	non-removable;
 +	vmmc-supply = <&v3v3>;
 +};
 +
@@ -73,4 +73,3 @@ index ded369abe..bcc99716b 100644
  };
 -- 
 2.43.0
-
