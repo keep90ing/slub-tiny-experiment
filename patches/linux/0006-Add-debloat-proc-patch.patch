@@ -11,7 +11,7 @@ Subject: [PATCH 06/20] Add debloat proc patch
  fs/proc/devices.c             |  3 +++
  fs/proc/interrupts.c          |  3 +++
  fs/proc/loadavg.c             |  3 +++
- fs/proc/proc_sysctl.c         |  3 +++
+ fs/proc/proc_sysctl.c         |  4 ++++
  fs/proc/proc_tty.c            | 11 ++++++++++-
  fs/proc/stat.c                |  3 +++
  fs/proc/uptime.c              |  3 +++
@@ -33,7 +33,7 @@ Subject: [PATCH 06/20] Add debloat proc patch
  net/ipv4/inet_timewait_sock.c |  2 +-
  net/ipv4/proc.c               |  3 +++
  net/ipv4/route.c              |  3 +++
- 29 files changed, 136 insertions(+), 15 deletions(-)
+ 29 files changed, 137 insertions(+), 15 deletions(-)
 
 diff --git a/fs/locks.c b/fs/locks.c
 index d13ec930b..cdf918a35 100644
@@ -138,11 +138,12 @@ diff --git a/fs/proc/proc_sysctl.c b/fs/proc/proc_sysctl.c
 index 49ab74e0b..34122ea2c 100644
 --- a/fs/proc/proc_sysctl.c
 +++ b/fs/proc/proc_sysctl.c
-@@ -1562,6 +1562,9 @@ int __init proc_sys_init(void)
+@@ -1562,6 +1562,10 @@ int __init proc_sys_init(void)
  {
  	struct proc_dir_entry *proc_sys_root;
  
-+	if (IS_ENABLED(CONFIG_PROC_STRIPPED))
++	if (IS_ENABLED(CONFIG_PROC_STRIPPED) &&
++	    !IS_ENABLED(CONFIG_PROC_SYSCTL))
 +		return 0;
 +
  	proc_sys_root = proc_mkdir("sys", NULL);
@@ -220,7 +221,7 @@ index 2886fbceb..5346b6ba7 100644
  extern int sysctl_init_bases(void);
  extern void __register_sysctl_init(const char *path, const struct ctl_table *table,
  				 const char *table_name, size_t table_size);
-+#ifndef CONFIG_PROC_STRIPPED
++#if !defined(CONFIG_PROC_STRIPPED) || defined(CONFIG_PROC_SYSCTL)
  #define register_sysctl_init(path, table)	\
  	__register_sysctl_init(path, table, #table, ARRAY_SIZE(table))
 +#else
@@ -601,4 +602,3 @@ index 463236e0d..6580854f9 100644
  
 -- 
 2.43.0
-
