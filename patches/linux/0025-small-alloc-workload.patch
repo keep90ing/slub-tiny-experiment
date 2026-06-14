@@ -1,0 +1,141 @@
+From 3689622782ebae0b2d3f7e307883cca622801697 Mon Sep 17 00:00:00 2001
+From: Wilson Zeng <cheng20011202@gmail.com>
+Date: Sun, 14 Jun 2026 17:35:20 +0800
+Subject: [PATCH 1/5] mm: add minimal small-pair SLUB_TINY workload
+
+---
+ mm/Kconfig         | 15 +++++++++
+ mm/Makefile        |  1 +
+ mm/slub_wl_small.c | 83 ++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 99 insertions(+)
+ create mode 100644 mm/slub_wl_small.c
+
+diff --git a/mm/Kconfig b/mm/Kconfig
+index 6dfc901c7..adafeb1c7 100644
+--- a/mm/Kconfig
++++ b/mm/Kconfig
+@@ -205,6 +205,21 @@ config SLUB_TINY_INSTRUMENTATION
+ 
+ 	  If unsure, say N.
+ 
++# SLUB_TINY workload drivers. Each measurement image selects at most one
++# kernel driver. The real-VFS workload is a userspace syscall test and
++# therefore needs no resident kernel workload code.
++config SLUB_WL_SMALL
++	bool "SLUB_TINY workload: immediate small-object pairs"
++	depends on SLUB_TINY && PROC_FS
++	default n
++	help
++	  Expose /proc/slub_wl_small for tightly bracketed fixed-size
++	  kmalloc/kfree pairs. The driver reports raw elapsed nanoseconds
++	  so allocator latency can be measured with hot-path
++	  instrumentation disabled.
++
++	  If unsure, say N.
++
+ config SLAB_MERGE_DEFAULT
+ 	bool "Allow slab caches to be merged"
+ 	default y
+diff --git a/mm/Makefile b/mm/Makefile
+index 8ad2ab082..3c6663ef3 100644
+--- a/mm/Makefile
++++ b/mm/Makefile
+@@ -70,6 +70,7 @@ obj-y += init-mm.o
+ obj-y += memblock.o
+ obj-y += $(memory-hotplug-y)
+ obj-y += slub.o
++obj-$(CONFIG_SLUB_WL_SMALL)	+= slub_wl_small.o
+ 
+ ifdef CONFIG_MMU
+ 	obj-$(CONFIG_ADVISE_SYSCALLS)	+= madvise.o
+diff --git a/mm/slub_wl_small.c b/mm/slub_wl_small.c
+new file mode 100644
+index 000000000..884d0313f
+--- /dev/null
++++ b/mm/slub_wl_small.c
+@@ -0,0 +1,83 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Immediate small-object allocation workload.
++ *
++ * Protocol:
++ *   echo "imm <iterations> [size]" > /proc/slub_wl_small
++ *
++ * The default size is 64 bytes. Sizes are restricted to 1..128 bytes so
++ * this remains a focused small-cache latency probe. Keep allocator
++ * instrumentation disabled for timing images; elapsed_ns brackets only the
++ * allocation/free loop.
++ */
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/ktime.h>
++#include <linux/proc_fs.h>
++#include <linux/slab.h>
++#include <linux/string.h>
++#include <linux/uaccess.h>
++
++#define SMALL_MAX_ITERS		(1U << 20)
++#define SMALL_DEFAULT_SIZE	64U
++#define SMALL_MAX_SIZE		128U
++
++static unsigned int run_immediate(unsigned int iterations, unsigned int size)
++{
++	unsigned int i;
++
++	for (i = 0; i < iterations; i++) {
++		void *object = kmalloc(size, GFP_KERNEL);
++
++		if (!object)
++			break;
++		kfree(object);
++	}
++	return i;
++}
++
++static ssize_t slub_wl_small_write(struct file *file,
++				   const char __user *buffer,
++				   size_t length, loff_t *position)
++{
++	char input[48];
++	char verb[8];
++	unsigned int iterations = 0;
++	unsigned int size = SMALL_DEFAULT_SIZE;
++	unsigned int completed;
++	u64 start_ns;
++	u64 end_ns;
++	int parsed;
++
++	if (!length || length >= sizeof(input))
++		return -EINVAL;
++	if (copy_from_user(input, buffer, length))
++		return -EFAULT;
++	input[length] = '\0';
++
++	parsed = sscanf(input, "%7s %u %u", verb, &iterations, &size);
++	if (parsed < 2 || strcmp(verb, "imm") ||
++	    !iterations || iterations > SMALL_MAX_ITERS ||
++	    !size || size > SMALL_MAX_SIZE)
++		return -EINVAL;
++
++	start_ns = ktime_get_ns();
++	completed = run_immediate(iterations, size);
++	end_ns = ktime_get_ns();
++
++	pr_info("slub_wl_small: size=%u requested=%u completed=%u elapsed_ns=%llu\n",
++		size, iterations, completed,
++		(unsigned long long)(end_ns - start_ns));
++	return length;
++}
++
++static const struct proc_ops slub_wl_small_ops = {
++	.proc_write = slub_wl_small_write,
++};
++
++static int __init slub_wl_small_init(void)
++{
++	proc_create("slub_wl_small", 0200, NULL, &slub_wl_small_ops);
++	return 0;
++}
++late_initcall(slub_wl_small_init);
+-- 
+2.54.0
