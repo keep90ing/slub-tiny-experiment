@@ -1,0 +1,25 @@
+From a0d196a2cd64ae8f7a9e5dc4bfbc26d2bb49ed79 Mon Sep 17 00:00:00 2001
+From: Wilson Zeng <cheng20011202@gmail.com>
+Date: Tue, 16 Jun 2026 21:49:55 +0800
+Subject: [PATCH 1/6] mm/slub: default SLUB_TINY slub_max_order to 0
+
+---
+ mm/slub.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/mm/slub.c b/mm/slub.c
+index deaaf6de9..ce6ac67d3 100644
+--- a/mm/slub.c
++++ b/mm/slub.c
+@@ -7631,8 +7631,8 @@ EXPORT_SYMBOL(kmem_cache_alloc_bulk_noprof);
+  * take the list_lock.
+  */
+ static unsigned int slub_min_order;
+ static unsigned int slub_max_order =
+-	IS_ENABLED(CONFIG_SLUB_TINY) ? 1 : PAGE_ALLOC_COSTLY_ORDER;
++	IS_ENABLED(CONFIG_SLUB_TINY) ? 0 : PAGE_ALLOC_COSTLY_ORDER;
+ static unsigned int slub_min_objects;
+ 
+ /*
+-- 
+2.54.0
