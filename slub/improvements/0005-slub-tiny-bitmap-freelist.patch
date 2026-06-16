@@ -1,0 +1,221 @@
+From 5e87b00cfd91492f8dd800b0dd9a38860d67a82a Mon Sep 17 00:00:00 2001
+From: Wilson Zeng <cheng20011202@gmail.com>
+Date: Tue, 16 Jun 2026 21:50:01 +0800
+Subject: [PATCH 5/6] mm/slub: replace SLUB_TINY pointer freelist with a bitmap
+
+---
+ mm/slub.c | 147 ++++++++++++++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 135 insertions(+), 12 deletions(-)
+
+diff --git a/mm/slub.c b/mm/slub.c
+index 8a63bf87f..d0beb851f 100644
+--- a/mm/slub.c
++++ b/mm/slub.c
+@@ -572,9 +572,79 @@ static inline unsigned int get_info_end(struct kmem_cache *s)
+ 		__p < (__addr) + (__objects) * (__s)->size; \
+ 		__p += (__s)->size)
+ 
++#ifdef CONFIG_SLUB_TINY
++/*
++ * SLUB_TINY keeps allocation state in a per-slab bitmap instead of a
++ * freepointer chain. A set bit means the object slot is allocated.
++ *
++ * Small slabs store the bitmap in slab->freelist, which is no longer used
++ * as a pointer under SLUB_TINY. Larger slabs reserve bitmap storage at the
++ * end of the slab memory.
++ *
++ * The modified allocation/free paths are serialized by n->list_lock, or run
++ * while the slab is not yet visible to other CPUs, so non-atomic bitops are
++ * sufficient here.
++ */
++static inline unsigned int slub_tiny_bitmap_bytes(unsigned int objects)
++{
++	if (objects <= BITS_PER_LONG)
++		return 0;
++	return ALIGN(DIV_ROUND_UP(objects, BITS_PER_BYTE),
++		     sizeof(unsigned long));
++}
++
++static inline unsigned long *slab_bitmap(const struct kmem_cache *s,
++					 const struct slab *slab)
++{
++	if (slab->objects <= BITS_PER_LONG)
++		return (unsigned long *)&slab->freelist;
++	return (unsigned long *)((char *)slab_address(slab) +
++				 slab_size(slab) -
++				 slub_tiny_bitmap_bytes(slab->objects));
++}
++
++static inline void *slub_tiny_bitmap_alloc(struct kmem_cache *s,
++					   struct slab *slab)
++{
++	unsigned long *map = slab_bitmap(s, slab);
++	unsigned int idx = find_first_zero_bit(map, slab->objects);
++
++	if (WARN_ON_ONCE(idx >= slab->objects))
++		return NULL;
++	__set_bit(idx, map);
++	return (char *)slab_address(slab) + idx * s->size;
++}
++
++static inline void slub_tiny_bitmap_free(struct kmem_cache *s,
++					 struct slab *slab, void *object)
++{
++	unsigned int idx = __obj_to_index(s, slab_address(slab), object);
++
++	__clear_bit(idx, slab_bitmap(s, slab));
++}
++#else
++static inline unsigned int slub_tiny_bitmap_bytes(unsigned int objects)
++{
++	return 0;
++}
++#endif /* CONFIG_SLUB_TINY */
++
+ static inline unsigned int order_objects(unsigned int order, unsigned int size)
+ {
+-	return ((unsigned int)PAGE_SIZE << order) / size;
++	unsigned int slab_bytes = (unsigned int)PAGE_SIZE << order;
++	unsigned int objects = slab_bytes / size;
++
++	if (IS_ENABLED(CONFIG_SLUB_TINY)) {
++		/*
++		 * Reserve room for the bitmap when it does not fit in
++		 * slab->freelist.
++		 */
++		while (objects > BITS_PER_LONG &&
++		       objects * size + slub_tiny_bitmap_bytes(objects) >
++		       slab_bytes)
++			objects--;
++	}
++	return objects;
+ }
+ 
+ static inline struct kmem_cache_order_objects oo_make(unsigned int order,
+@@ -3822,7 +3892,21 @@ static struct slab *allocate_slab(struct kmem_cache *s, gfp_t flags, int node)
+ 
+ 	shuffle = shuffle_freelist(s, slab, allow_spin);
+ 
+-	if (!shuffle) {
++	if (IS_ENABLED(CONFIG_SLUB_TINY)) {
++		/*
++		 * Initialize bitmap state instead of linking free objects.
++		 * Constructor caches still need setup_object() for every object.
++		 */
++		slab->freelist = NULL;
++		if (slab->objects > BITS_PER_LONG)
++			memset(slab_bitmap(s, slab), 0,
++			       slub_tiny_bitmap_bytes(slab->objects));
++		if (unlikely(s->ctor)) {
++			for (idx = 0, p = start; idx < slab->objects;
++			     idx++, p += s->size)
++				setup_object(s, p);
++		}
++	} else if (!shuffle) {
+ 		start = fixup_red_left(s, start);
+ 		start = setup_object(s, start);
+ 		slab->freelist = start;
+@@ -3975,8 +4059,14 @@ static void *alloc_single_from_partial(struct kmem_cache *s,
+ 	}
+ #endif
+ 
+-	object = slab->freelist;
+-	slab->freelist = get_freepointer(s, object);
++	if (IS_ENABLED(CONFIG_SLUB_TINY)) {
++		object = slub_tiny_bitmap_alloc(s, slab);
++		if (unlikely(!object))
++			return NULL;
++	} else {
++		object = slab->freelist;
++		slab->freelist = get_freepointer(s, object);
++	}
+ 	slab->inuse++;
+ 
+ 	if (!alloc_debug_processing(s, slab, object, orig_size)) {
+@@ -4012,8 +4102,17 @@ static void *alloc_single_from_new_slab(struct kmem_cache *s, struct slab *slab,
+ 		return NULL;
+ 	}
+ 
+-	object = slab->freelist;
+-	slab->freelist = get_freepointer(s, object);
++	if (IS_ENABLED(CONFIG_SLUB_TINY)) {
++		object = slub_tiny_bitmap_alloc(s, slab);
++		if (unlikely(!object)) {
++			if (!allow_spin)
++				spin_unlock_irqrestore(&n->list_lock, flags);
++			return NULL;
++		}
++	} else {
++		object = slab->freelist;
++		slab->freelist = get_freepointer(s, object);
++	}
+ 	slab->inuse = 1;
+ 
+ 	if (!alloc_debug_processing(s, slab, object, orig_size)) {
+@@ -5740,12 +5839,31 @@ static noinline void free_to_partial_list(
+ 	spin_lock_irqsave(&n->list_lock, flags);
+ 
+ 	if (free_debug_processing(s, slab, head, tail, &cnt, addr, handle)) {
+-		void *prior = slab->freelist;
++		bool was_full;
+ 
+ 		/* Perform the actual freeing while we still hold the locks */
++		if (IS_ENABLED(CONFIG_SLUB_TINY)) {
++			void *object = head;
++
++			was_full = (slab->inuse == slab->objects);
++			/*
++			 * head..tail is either one object or the detached
++			 * bulk-free chain. Clear each object's bit.
++			 */
++			for (;;) {
++				slub_tiny_bitmap_free(s, slab, object);
++				if (object == tail)
++					break;
++				object = get_freepointer(s, object);
++			}
++		} else {
++			void *prior = slab->freelist;
++
++			was_full = (prior == NULL);
++			set_freepointer(s, tail, prior);
++			slab->freelist = head;
++		}
+ 		slab->inuse -= cnt;
+-		set_freepointer(s, tail, prior);
+-		slab->freelist = head;
+ 
+ 		/*
+ 		 * If the slab is empty, and node's partial list is full,
+@@ -5755,7 +5873,7 @@ static noinline void free_to_partial_list(
+ 		if (slab->inuse == 0 && n->nr_partial >= s->min_partial)
+ 			slab_free = slab;
+ 
+-		if (!prior) {
++		if (was_full) {
+ 			/* was on full list */
+ 			remove_full(s, n, slab);
+ 			if (!slab_free) {
+@@ -7871,13 +7989,18 @@ static void early_kmem_cache_node_alloc(int node)
+ 		pr_err("SLUB: Allocating a useless per node structure in order to be able to continue\n");
+ 	}
+ 
+-	n = slab->freelist;
++	if (IS_ENABLED(CONFIG_SLUB_TINY)) {
++		n = slub_tiny_bitmap_alloc(kmem_cache_node, slab);
++	} else {
++		n = slab->freelist;
++	}
+ 	BUG_ON(!n);
+ #ifdef CONFIG_SLUB_DEBUG
+ 	init_object(kmem_cache_node, n, SLUB_RED_ACTIVE);
+ #endif
+ 	n = kasan_slab_alloc(kmem_cache_node, n, GFP_KERNEL, false);
+-	slab->freelist = get_freepointer(kmem_cache_node, n);
++	if (!IS_ENABLED(CONFIG_SLUB_TINY))
++		slab->freelist = get_freepointer(kmem_cache_node, n);
+ 	slab->inuse = 1;
+ 	kmem_cache_node->node[node] = n;
+ 	init_kmem_cache_node(n, NULL);
+-- 
+2.54.0
