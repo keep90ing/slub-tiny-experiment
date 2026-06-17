@@ -39,10 +39,10 @@ oom)
 	done
 	;;
 realvfs)
-	sh /realvfs.sh 200
+	sh /realvfs.sh "${2:-200}"
 	;;
 *)
-	echo "usage: sh /run_slub_workload.sh small [rounds]|churn|mixlife|oom|realvfs"
+	echo "usage: sh /run_slub_workload.sh small [rounds]|churn|mixlife|oom|realvfs [iterations]"
 	exit 2
 	;;
 esac
