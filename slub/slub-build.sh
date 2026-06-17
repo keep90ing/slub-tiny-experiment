@@ -20,7 +20,7 @@
 #       (re-extract the kernel so base patches 0021..0029 are present)
 #   ./slub-build.sh <variant> <workload> [profile]
 #       variant : baseline order0 nomerge sheafbypass minpartial
-#                 reclaim bitmap rec combined
+#                 bitmap rec combined
 #       workload: small churn mixlife oom realvfs
 #       profile : metrics (default, workload-specific instrumentation)
 #                 perf (small only, instrumentation disabled)
@@ -43,14 +43,13 @@ BOARD_PATCHES="$BR/board/stmicroelectronics/stm32f429-disco/patches/linux"
 variant_patches() {
 	case "$1" in
 	baseline)    echo "" ;;
-	order0)      echo "0009-slub-tiny-order0" ;;
-	nomerge)     echo "0010-slub-tiny-unmerge-kconfig" ;;
-	sheafbypass) echo "0011-slub-tiny-sheaf-bypass" ;;
-	minpartial)  echo "0012-slub-tiny-min-partial" ;;
-	reclaim)     echo "0013-slub-tiny-separate-reclaim" ;;
-	bitmap)      echo "0014-slub-tiny-bitmap-freelist" ;;
-	rec)         echo "0009-slub-tiny-order0 0011-slub-tiny-sheaf-bypass 0012-slub-tiny-min-partial" ;;
-	combined)    echo "0009-slub-tiny-order0 0011-slub-tiny-sheaf-bypass 0012-slub-tiny-min-partial 0014-slub-tiny-bitmap-freelist" ;;
+	order0)      echo "0001-slub-tiny-order0" ;;
+	nomerge)     echo "0002-slub-tiny-unmerge-kconfig" ;;
+	sheafbypass) echo "0003-slub-tiny-sheaf-bypass" ;;
+	minpartial)  echo "0004-slub-tiny-min-partial" ;;
+	bitmap)      echo "0005-slub-tiny-bitmap-freelist" ;;
+	rec)         echo "0001-slub-tiny-order0 0003-slub-tiny-sheaf-bypass 0004-slub-tiny-min-partial" ;;
+	combined)    echo "0001-slub-tiny-order0 0003-slub-tiny-sheaf-bypass 0004-slub-tiny-min-partial 0005-slub-tiny-bitmap-freelist" ;;
 	*) echo "UNKNOWN" ;;
 	esac
 }
@@ -59,7 +58,6 @@ variant_patches() {
 variant_config() {
 	case "$1" in
 	nomerge) echo "# CONFIG_SLAB_MERGE_DEFAULT is not set" ;;
-	reclaim) echo "CONFIG_SLUB_TINY_SEPARATE_RECLAIM=y" ;;
 	*) : ;;
 	esac
 }
@@ -112,11 +110,6 @@ workload_config() {
 	oom)
 		echo "CONFIG_SLUB_WL_OOM=y"
 		;;
-	realvfs)
-		echo "CONFIG_EXT2_FS_XATTR=y"
-		echo "CONFIG_SYSCTL=y"
-		echo "CONFIG_PROC_SYSCTL=y"
-		;;
 	esac
 }
 
@@ -129,7 +122,8 @@ workload_known() {
 
 base_present() {
 	[ -f "$LINUX_DIR/mm/slub_wl_small.c" ] &&
-	[ -f "$LINUX_DIR/tools/testing/selftests/mm/slub_tiny_xattr.c" ]
+	[ -f "$LINUX_DIR/tools/testing/selftests/mm/slub_tiny_realvfs.sh" ] &&
+	[ -f "$LINUX_DIR/tools/testing/selftests/mm/slub_tiny_vfs.c" ]
 }
 
 sync_base_patches() {
@@ -157,20 +151,25 @@ embed_scripts_romfs() {
 	rm -f "$rfs/measure_slub_phase.sh" "$rfs/run_slub_seed_sweep.sh" \
 	      "$rfs/run_slub_workload.sh" "$rfs/smeasure.sh" \
 	      "$rfs/sweep_seeds.sh" "$rfs/run_slub_baseline.sh" \
-	      "$rfs/realvfs.sh" "$rfs/slub_xattr"
+	      "$rfs/sweep_small_sizes.sh" \
+	      "$rfs/realvfs.sh" "$rfs/slub_vfs"
 	cp "$SLUB_DIR/scripts/run_slub_workload.sh" "$rfs/"
 	case "$workload" in
 	realvfs)
 		cp "$LINUX_DIR/tools/testing/selftests/mm/slub_tiny_realvfs.sh" \
 		   "$rfs/realvfs.sh"
 		"$BR/output/host/bin/arm-linux-gcc" -Os \
-			-o "$rfs/slub_xattr" \
-			"$LINUX_DIR/tools/testing/selftests/mm/slub_tiny_xattr.c"
-		"$BR/output/host/bin/arm-linux-strip" "$rfs/slub_xattr"
+			-o "$rfs/slub_vfs" \
+			"$LINUX_DIR/tools/testing/selftests/mm/slub_tiny_vfs.c"
+		"$BR/output/host/bin/arm-linux-strip" "$rfs/slub_vfs"
 		;;
 	mixlife)
 		cp "$SLUB_DIR/scripts/measure_slub_phase.sh" \
 		   "$SLUB_DIR/scripts/run_slub_seed_sweep.sh" "$rfs/"
+		;;
+	small)
+		cp "$SLUB_DIR/scripts/measure_slub_phase.sh" \
+		   "$SLUB_DIR/scripts/sweep_small_sizes.sh" "$rfs/"
 		;;
 	*)
 		cp "$SLUB_DIR/scripts/measure_slub_phase.sh" "$rfs/"
@@ -311,7 +310,7 @@ cmd_build() {
 	cp "$cfg" "$out/.config"
 	"$BR/output/host/bin/arm-linux-size" "$LINUX_DIR/vmlinux" \
 		> "$out/size.txt" 2>/dev/null || true
-	grep -E "SLUB_TINY_INST|SLUB_WL_|SLAB_MERGE|SEPARATE_RECLAIM|EXT2_FS_XATTR|PROC_SYSCTL|CONFIG_SYSCTL" \
+	grep -E "SLUB_TINY_INST|SLUB_WL_|SLAB_MERGE" \
 		"$cfg" | grep -v "^#.*is not set$" > "$out/enabled.txt" || true
 
 	echo "[build] image -> $out/"

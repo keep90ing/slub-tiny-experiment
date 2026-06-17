@@ -4,25 +4,26 @@ Date: Sun, 14 Jun 2026 17:35:24 +0800
 Subject: [PATCH 5/5] selftests: add real VFS SLUB_TINY workload helpers
 
 ---
- .../testing/selftests/mm/slub_tiny_realvfs.sh | 127 ++++++++++++++++++
- tools/testing/selftests/mm/slub_tiny_xattr.c  |  67 +++++++++
- 2 files changed, 194 insertions(+)
+ .../testing/selftests/mm/slub_tiny_realvfs.sh | 111 ++++++
+ tools/testing/selftests/mm/slub_tiny_vfs.c    | 380 ++++++++++++++++++
+ 2 files changed, 491 insertions(+)
  create mode 100644 tools/testing/selftests/mm/slub_tiny_realvfs.sh
- create mode 100644 tools/testing/selftests/mm/slub_tiny_xattr.c
+ create mode 100644 tools/testing/selftests/mm/slub_tiny_vfs.c
 
 diff --git a/tools/testing/selftests/mm/slub_tiny_realvfs.sh b/tools/testing/selftests/mm/slub_tiny_realvfs.sh
 new file mode 100644
 index 000000000..31f2aacb2
 --- /dev/null
 +++ b/tools/testing/selftests/mm/slub_tiny_realvfs.sh
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,111 @@
 +#!/bin/sh
-+# Real VFS and reclaimable-metadata pressure for the STM32F429 image.
++# Real VFS metadata churn and fork/exec pressure for the STM32F429 image.
 +#
 +# Usage: sh /realvfs.sh [iterations]
 +
 +N="${1:-200}"
 +DIR=/root/slubtest
++HELPER=/slub_vfs
 +
 +metric()
 +{
@@ -74,6 +75,19 @@ index 000000000..31f2aacb2
 +	fi
 +}
 +
++run_vfs_phase()
++{
++	phase="$1"
++	label="$2"
++	control_window "$phase"
++	reset_peaks
++	print_freq "workload:$phase:start"
++	"$HELPER" "$DIR" "$N" "$phase" || exit 1
++	sync
++	print_freq "workload:$phase:end"
++	snapshot "$label"
++}
++
 +case "$N" in
 +	''|*[!0-9]*)
 +		echo "iterations must be a positive integer"
@@ -84,52 +98,22 @@ index 000000000..31f2aacb2
 +	echo "iterations must be positive"
 +	exit 2
 +fi
++if [ ! -x "$HELPER" ]; then
++	echo "$HELPER unavailable"
++	exit 1
++fi
 +
 +echo "########## realvfs: iterations=$N ##########"
 +rm -rf "$DIR" || exit 1
 +mkdir -p "$DIR" || exit 1
 +snapshot before
-+control_window fill
-+reset_peaks
-+print_freq "workload:fill:start"
 +
-+i=0
-+while [ "$i" -lt "$N" ]; do
-+	mkdir "$DIR/d$i" || exit 1
-+	echo "payload-$i" > "$DIR/d$i/f" || exit 1
-+	cat "$DIR/d$i/f" > /dev/null || exit 1
-+	i=$((i + 1))
-+done
-+
-+if [ -x /slub_xattr ]; then
-+	/slub_xattr "$DIR" "$N" || exit 1
-+else
-+	echo "slub_xattr helper unavailable"
-+	exit 1
-+fi
-+sync
-+print_freq "workload:fill:end"
-+snapshot fs_peak
-+
-+control_window drain
-+reset_peaks
-+print_freq "workload:drain:start"
-+rm -rf "$DIR" || exit 1
-+sync
-+print_freq "workload:drain:end"
-+snapshot fs_drained
-+
-+if [ ! -w /proc/sys/vm/drop_caches ]; then
-+	echo "/proc/sys/vm/drop_caches unavailable"
-+	exit 1
-+fi
-+control_window reclaim
-+reset_peaks
-+print_freq "workload:reclaim:start"
-+sync
-+echo 2 > /proc/sys/vm/drop_caches || exit 1
-+print_freq "workload:reclaim:end"
-+snapshot fs_reclaimed
++run_vfs_phase create fs_peak
++run_vfs_phase lookup fs_lookup
++run_vfs_phase sparse fs_sparse
++run_vfs_phase refill fs_refill
++run_vfs_phase churn fs_churn
++run_vfs_phase drain fs_drained
 +
 +control_window forkexec
 +reset_peaks
@@ -143,78 +127,391 @@ index 000000000..31f2aacb2
 +snapshot forkexec
 +
 +echo "########## realvfs done ##########"
-diff --git a/tools/testing/selftests/mm/slub_tiny_xattr.c b/tools/testing/selftests/mm/slub_tiny_xattr.c
+diff --git a/tools/testing/selftests/mm/slub_tiny_vfs.c b/tools/testing/selftests/mm/slub_tiny_vfs.c
 new file mode 100644
 index 000000000..ceaeb129c
 --- /dev/null
-+++ b/tools/testing/selftests/mm/slub_tiny_xattr.c
-@@ -0,0 +1,67 @@
++++ b/tools/testing/selftests/mm/slub_tiny_vfs.c
+@@ -0,0 +1,380 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
-+ * Minimal setxattr/getxattr helper for the no-MMU SLUB_TINY real-VFS test.
++ * Deterministic real-VFS metadata churn helper for no-MMU SLUB_TINY tests.
 + *
-+ * Usage: slub_tiny_xattr <directory> <count>
-+ * The directory must contain d0/f ... d<count-1>/f.
++ * Usage: slub_tiny_vfs <directory> <count> <create|lookup|sparse|refill|churn|drain>
 + */
 +#include <errno.h>
++#include <fcntl.h>
 +#include <stdio.h>
 +#include <stdlib.h>
 +#include <string.h>
++#include <sys/stat.h>
 +#include <sys/types.h>
-+#include <sys/xattr.h>
++#include <unistd.h>
 +
++#define BUCKETS 16
 +#define PATH_BUFFER_SIZE 256
++
++static const size_t file_sizes[] = { 0, 16, 128, 1024 };
++
++static int path_printf(char *buf, size_t len, const char *fmt,
++		       const char *root, unsigned long idx)
++{
++	int ret = snprintf(buf, len, fmt, root, idx % BUCKETS, idx,
++			   (idx * 2654435761UL) >> 8);
++
++	if (ret < 0 || (size_t)ret >= len) {
++		fprintf(stderr, "slub_tiny_vfs: path too long for index %lu\n", idx);
++		return -1;
++	}
++	return 0;
++}
++
++static int dir_path(char *buf, size_t len, const char *root, unsigned long idx)
++{
++	int ret = snprintf(buf, len, "%s/d%02lu", root, idx % BUCKETS);
++
++	if (ret < 0 || (size_t)ret >= len) {
++		fprintf(stderr, "slub_tiny_vfs: directory path too long\n");
++		return -1;
++	}
++	return 0;
++}
++
++static int file_path(char *buf, size_t len, const char *root, unsigned long idx)
++{
++	return path_printf(buf, len, "%s/d%02lu/f-%05lu-%08lx.dat", root, idx);
++}
++
++static int tmp_path(char *buf, size_t len, const char *root, unsigned long idx)
++{
++	return path_printf(buf, len, "%s/d%02lu/t-%05lu-%08lx.tmp", root, idx);
++}
++
++static int mkdir_ok(const char *path)
++{
++	if (mkdir(path, 0755) && errno != EEXIST) {
++		fprintf(stderr, "slub_tiny_vfs: mkdir %s: %s\n",
++			path, strerror(errno));
++		return -1;
++	}
++	return 0;
++}
++
++static int unlink_ok(const char *path)
++{
++	if (unlink(path) && errno != ENOENT) {
++		fprintf(stderr, "slub_tiny_vfs: unlink %s: %s\n",
++			path, strerror(errno));
++		return -1;
++	}
++	return 0;
++}
++
++static int rmdir_ok(const char *path)
++{
++	if (rmdir(path) && errno != ENOENT) {
++		fprintf(stderr, "slub_tiny_vfs: rmdir %s: %s\n",
++			path, strerror(errno));
++		return -1;
++	}
++	return 0;
++}
++
++static int ensure_dirs(const char *root)
++{
++	char path[PATH_BUFFER_SIZE];
++	unsigned long i;
++
++	if (mkdir_ok(root))
++		return -1;
++	for (i = 0; i < BUCKETS; i++) {
++		if (dir_path(path, sizeof(path), root, i))
++			return -1;
++		if (mkdir_ok(path))
++			return -1;
++	}
++	return 0;
++}
++
++static int write_all(int fd, const void *buf, size_t len)
++{
++	const char *ptr = buf;
++
++	while (len) {
++		ssize_t ret = write(fd, ptr, len);
++
++		if (ret < 0) {
++			if (errno == EINTR)
++				continue;
++			return -1;
++		}
++		if (!ret) {
++			errno = EIO;
++			return -1;
++		}
++		ptr += ret;
++		len -= ret;
++	}
++	return 0;
++}
++
++static int create_one(const char *root, unsigned long idx)
++{
++	char path[PATH_BUFFER_SIZE];
++	char buf[128];
++	size_t total = file_sizes[idx % (sizeof(file_sizes) / sizeof(file_sizes[0]))];
++	size_t done = 0;
++	int fd;
++
++	if (file_path(path, sizeof(path), root, idx))
++		return -1;
++	fd = open(path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
++	if (fd < 0) {
++		fprintf(stderr, "slub_tiny_vfs: open %s: %s\n", path, strerror(errno));
++		return -1;
++	}
++	while (done < total) {
++		size_t chunk = total - done;
++		size_t i;
++
++		if (chunk > sizeof(buf))
++			chunk = sizeof(buf);
++		for (i = 0; i < chunk; i++)
++			buf[i] = 'A' + ((idx + done + i) % 26);
++		if (write_all(fd, buf, chunk)) {
++			fprintf(stderr, "slub_tiny_vfs: write %s: %s\n",
++				path, strerror(errno));
++			close(fd);
++			return -1;
++		}
++		done += chunk;
++	}
++	if (close(fd)) {
++		fprintf(stderr, "slub_tiny_vfs: close %s: %s\n", path, strerror(errno));
++		return -1;
++	}
++	return 0;
++}
++
++static int read_one(const char *root, unsigned long idx)
++{
++	char path[PATH_BUFFER_SIZE];
++	char buf[128];
++	struct stat st;
++	int fd;
++
++	if (file_path(path, sizeof(path), root, idx))
++		return -1;
++	if (stat(path, &st)) {
++		fprintf(stderr, "slub_tiny_vfs: stat %s: %s\n", path, strerror(errno));
++		return -1;
++	}
++	fd = open(path, O_RDONLY);
++	if (fd < 0) {
++		fprintf(stderr, "slub_tiny_vfs: open %s: %s\n", path, strerror(errno));
++		return -1;
++	}
++	for (;;) {
++		ssize_t ret = read(fd, buf, sizeof(buf));
++
++		if (!ret)
++			break;
++		if (ret < 0) {
++			if (errno == EINTR)
++				continue;
++			fprintf(stderr, "slub_tiny_vfs: read %s: %s\n",
++				path, strerror(errno));
++			close(fd);
++			return -1;
++		}
++	}
++	if (close(fd)) {
++		fprintf(stderr, "slub_tiny_vfs: close %s: %s\n", path, strerror(errno));
++		return -1;
++	}
++	return 0;
++}
++
++static int rename_one(const char *root, unsigned long idx)
++{
++	char oldpath[PATH_BUFFER_SIZE];
++	char newpath[PATH_BUFFER_SIZE];
++	struct stat st;
++
++	if (file_path(oldpath, sizeof(oldpath), root, idx) ||
++	    tmp_path(newpath, sizeof(newpath), root, idx))
++		return -1;
++	if (rename(oldpath, newpath)) {
++		fprintf(stderr, "slub_tiny_vfs: rename %s: %s\n",
++			oldpath, strerror(errno));
++		return -1;
++	}
++	if (stat(newpath, &st)) {
++		fprintf(stderr, "slub_tiny_vfs: stat %s: %s\n", newpath, strerror(errno));
++		return -1;
++	}
++	if (rename(newpath, oldpath)) {
++		fprintf(stderr, "slub_tiny_vfs: rename %s: %s\n",
++			newpath, strerror(errno));
++		return -1;
++	}
++	return 0;
++}
++
++static int phase_create(const char *root, unsigned long count)
++{
++	unsigned long i;
++
++	if (ensure_dirs(root))
++		return -1;
++	for (i = 0; i < count; i++) {
++		if (create_one(root, i))
++			return -1;
++	}
++	printf("slub_tiny_vfs: phase=create files=%lu\n", count);
++	return 0;
++}
++
++static int phase_lookup(const char *root, unsigned long count)
++{
++	unsigned long i;
++
++	for (i = 0; i < count; i++) {
++		if (read_one(root, i))
++			return -1;
++	}
++	printf("slub_tiny_vfs: phase=lookup files=%lu\n", count);
++	return 0;
++}
++
++static int phase_sparse(const char *root, unsigned long count)
++{
++	unsigned long i;
++	unsigned long deleted = 0;
++	unsigned long kept = 0;
++
++	for (i = 0; i < count; i++) {
++		char path[PATH_BUFFER_SIZE];
++
++		if ((i % 3) == 0) {
++			kept++;
++			continue;
++		}
++		if (file_path(path, sizeof(path), root, i) || unlink_ok(path))
++			return -1;
++		deleted++;
++	}
++	printf("slub_tiny_vfs: phase=sparse kept=%lu deleted=%lu\n", kept, deleted);
++	return 0;
++}
++
++static int phase_refill(const char *root, unsigned long count)
++{
++	unsigned long i;
++	unsigned long refilled = 0;
++
++	if (ensure_dirs(root))
++		return -1;
++	for (i = 0; i < count; i++) {
++		if ((i % 3) == 0)
++			continue;
++		if (create_one(root, i))
++			return -1;
++		refilled++;
++	}
++	printf("slub_tiny_vfs: phase=refill files=%lu\n", refilled);
++	return 0;
++}
++
++static int phase_churn(const char *root, unsigned long count)
++{
++	unsigned long ops = count * 2;
++	unsigned long i;
++	unsigned long renamed = 0;
++	unsigned long recreated = 0;
++	unsigned long readback = 0;
++
++	for (i = 0; i < ops; i++) {
++		unsigned long idx = (i * 1103515245UL + 12345UL) % count;
++
++		if (i & 1) {
++			if (rename_one(root, idx))
++				return -1;
++			renamed++;
++		} else {
++			char path[PATH_BUFFER_SIZE];
++
++			if (file_path(path, sizeof(path), root, idx) || unlink_ok(path))
++				return -1;
++			if (create_one(root, idx))
++				return -1;
++			recreated++;
++		}
++		if ((i & 7) == 0) {
++			if (read_one(root, idx))
++				return -1;
++			readback++;
++		}
++	}
++	printf("slub_tiny_vfs: phase=churn ops=%lu renamed=%lu recreated=%lu readback=%lu\n",
++	       ops, renamed, recreated, readback);
++	return 0;
++}
++
++static int phase_drain(const char *root, unsigned long count)
++{
++	char path[PATH_BUFFER_SIZE];
++	unsigned long i;
++
++	for (i = 0; i < count; i++) {
++		if (file_path(path, sizeof(path), root, i) || unlink_ok(path))
++			return -1;
++	}
++	for (i = 0; i < BUCKETS; i++) {
++		if (dir_path(path, sizeof(path), root, i) || rmdir_ok(path))
++			return -1;
++	}
++	if (rmdir_ok(root))
++		return -1;
++	printf("slub_tiny_vfs: phase=drain files=%lu\n", count);
++	return 0;
++}
 +
 +int main(int argc, char **argv)
 +{
-+	static const char value[] =
-+		"slub-tiny-reclaimable-metadata-pressure-0123456789abcdef";
-+	char path[PATH_BUFFER_SIZE];
-+	char readback[sizeof(value)];
++	const char *root;
++	const char *phase;
 +	unsigned long count;
-+	unsigned long i;
 +	char *end;
 +
-+	if (argc != 3) {
-+		fprintf(stderr, "usage: %s <directory> <count>\n", argv[0]);
++	if (argc != 4) {
++		fprintf(stderr, "usage: %s <directory> <count> <phase>\n", argv[0]);
 +		return 2;
 +	}
-+
++	root = argv[1];
++	phase = argv[3];
 +	errno = 0;
 +	count = strtoul(argv[2], &end, 10);
 +	if (errno || *end || !count) {
-+		fprintf(stderr, "invalid count: %s\n", argv[2]);
++		fprintf(stderr, "slub_tiny_vfs: invalid count: %s\n", argv[2]);
 +		return 2;
 +	}
 +
-+	for (i = 0; i < count; i++) {
-+		int length = snprintf(path, sizeof(path), "%s/d%lu/f",
-+				      argv[1], i);
-+		ssize_t bytes;
++	if (!strcmp(phase, "create"))
++		return phase_create(root, count) ? 1 : 0;
++	if (!strcmp(phase, "lookup"))
++		return phase_lookup(root, count) ? 1 : 0;
++	if (!strcmp(phase, "sparse"))
++		return phase_sparse(root, count) ? 1 : 0;
++	if (!strcmp(phase, "refill"))
++		return phase_refill(root, count) ? 1 : 0;
++	if (!strcmp(phase, "churn"))
++		return phase_churn(root, count) ? 1 : 0;
++	if (!strcmp(phase, "drain"))
++		return phase_drain(root, count) ? 1 : 0;
 +
-+		if (length < 0 || (size_t)length >= sizeof(path)) {
-+			fprintf(stderr, "path too long at %lu\n", i);
-+			return 2;
-+		}
-+		if (setxattr(path, "trusted.slub_tiny",
-+			     value, sizeof(value), 0)) {
-+			fprintf(stderr, "setxattr %s: %s\n",
-+				path, strerror(errno));
-+			return 1;
-+		}
-+		bytes = getxattr(path, "trusted.slub_tiny",
-+				 readback, sizeof(readback));
-+		if (bytes != sizeof(value) ||
-+		    memcmp(readback, value, sizeof(value))) {
-+			fprintf(stderr, "getxattr verification failed: %s\n",
-+				path);
-+			return 1;
-+		}
-+	}
-+
-+	printf("slub_tiny_xattr: files=%lu value_bytes=%zu\n",
-+	       count, sizeof(value));
-+	return 0;
++	fprintf(stderr, "slub_tiny_vfs: unknown phase: %s\n", phase);
++	return 2;
 +}
 -- 
 2.54.0

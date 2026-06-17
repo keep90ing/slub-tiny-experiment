@@ -110,7 +110,7 @@ def parse_frag(body):
     index = 0
     while index < len(lines):
         line = lines[index]
-        report = re.search(r"(slub_wl_\w+|slub_tiny_xattr):", line)
+        report = re.search(r"(slub_wl_\w+|slub_tiny_vfs):", line)
         if report:
             line = line[:report.start()].rstrip()
         fields = line.split()
@@ -578,7 +578,7 @@ def print_internal_timing(text):
 def print_workload_reports(text):
     lines = []
     for line in text.splitlines():
-        match = re.search(r"(slub_wl_\w+|slub_tiny_xattr):.*", line)
+        match = re.search(r"(slub_wl_\w+|slub_tiny_vfs):.*", line)
         if match:
             lines.append(match.group(0))
     if not lines:
