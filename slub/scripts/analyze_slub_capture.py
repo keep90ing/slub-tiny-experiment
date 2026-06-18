@@ -46,9 +46,9 @@ def section(body, name):
 def parse_freq(body):
     values = {}
     keys = {
-        "alloc", "free", "alloc_fail", "timestamp_ns",
-        "slab_alloc", "slab_free", "inflight", "peak_inflight",
-        "live_pages", "peak_live_pages",
+        "obj_allocs", "obj_frees", "sample_time_ns",
+        "slab_allocs", "slab_frees",
+        "live_slab_pages", "peak_live_slab_pages",
     }
     for line in body.splitlines():
         fields = line.split()
@@ -67,9 +67,9 @@ def parse_sizes(body):
         ):
             try:
                 rows[fields[0]] = {
-                    "alloc": int(fields[1]),
-                    "requested_B": int(fields[2]),
-                    "allocated_B": int(fields[3]),
+                    "obj_allocs": int(fields[1]),
+                    "requested_bytes": int(fields[2]),
+                    "allocated_slot_bytes": int(fields[3]),
                 }
             except ValueError:
                 pass
@@ -78,30 +78,20 @@ def parse_sizes(body):
 
 def parse_util(body):
     rows = {}
-    total = {}
     for line in body.splitlines():
         fields = line.split()
         if not fields:
             continue
-        if fields[0] == "TOTAL":
-            for index in range(1, len(fields) - 1, 2):
-                try:
-                    total[fields[index]] = int(fields[index + 1])
-                except ValueError:
-                    pass
-            continue
-        if len(fields) == 9 and all(value.isdigit() for value in fields[1:]):
+        if len(fields) == 7 and all(value.isdigit() for value in fields[1:]):
             rows[fields[0]] = {
                 "object_size": int(fields[1]),
                 "slot_size": int(fields[2]),
-                "order": int(fields[3]),
+                "slab_order": int(fields[3]),
                 "objects_per_slab": int(fields[4]),
                 "live_objects": int(fields[5]),
                 "live_slabs": int(fields[6]),
-                "live_pages": int(fields[7]),
-                "peak_live_pages": int(fields[8]),
             }
-    return rows, total
+    return rows
 
 
 def parse_frag(body):
@@ -115,19 +105,18 @@ def parse_frag(body):
             line = line[:report.start()].rstrip()
         fields = line.split()
         if (
-            len(fields) == 5
+            len(fields) == 4
             and index + 1 < len(lines)
             and lines[index + 1].strip().isdigit()
         ):
             fields.append(lines[index + 1].strip())
             index += 1
-        if len(fields) == 6 and all(value.isdigit() for value in fields[1:]):
+        if len(fields) == 5 and all(value.isdigit() for value in fields[1:]):
             rows[fields[0]] = {
                 "live_slabs": int(fields[1]),
                 "empty_slabs": int(fields[2]),
                 "partial_slabs": int(fields[3]),
-                "partial_slots": int(fields[4]),
-                "holes": int(fields[5]),
+                "free_slots_in_partial": int(fields[4]),
             }
         index += 1
     return rows
@@ -166,38 +155,21 @@ def parse_buddy(body):
     }
 
 
-def legacy_freq_key(tag):
-    if tag == "start":
-        return "workload", "single", True
-    if tag == "end":
-        return "workload", "single", False
-    if tag.startswith("start_"):
-        return "workload", tag[6:], True
-    if tag.startswith("end_"):
-        return "workload", tag[4:], False
-    if tag.endswith("_start"):
-        return "workload", tag[:-6], True
-    if tag.endswith("_end"):
-        return "workload", tag[:-4], False
-    return None, None, None
-
-
 def freq_key(tag):
     match = re.match(r"^(control|workload):(.+):(start|end)$", tag)
     if match:
         return match.group(1), match.group(2), match.group(3) == "start"
-    return legacy_freq_key(tag)
+    return None, None, None
 
 
 def counter_delta(before, after):
     result = {}
-    for key in ("alloc", "free", "alloc_fail", "slab_alloc", "slab_free"):
+    for key in ("obj_allocs", "obj_frees", "slab_allocs", "slab_frees"):
         result[key] = delta32(before.get(key, 0), after.get(key, 0))
     result["elapsed_ns"] = (
-        after.get("timestamp_ns", 0) - before.get("timestamp_ns", 0)
+        after.get("sample_time_ns", 0) - before.get("sample_time_ns", 0)
     )
-    result["peak_inflight"] = after.get("peak_inflight", 0)
-    result["peak_live_pages"] = after.get("peak_live_pages", 0)
+    result["peak_live_slab_pages"] = after.get("peak_live_slab_pages", 0)
     return result
 
 
@@ -238,7 +210,7 @@ def adjusted_delta(raw, control):
     if not control:
         return None
     adjusted = {}
-    for key in ("alloc", "free", "alloc_fail", "slab_alloc", "slab_free"):
+    for key in ("obj_allocs", "obj_frees", "slab_allocs", "slab_frees"):
         adjusted[key] = max(0, raw[key] - control[key])
     return adjusted
 
@@ -247,12 +219,13 @@ def print_timing(windows):
     if not windows:
         return
     controls = {}
-    print("\n# FREQ counter windows (elapsed is diagnostic, not allocator latency)")
+    print("\n# Allocation/free counters (window_ms is diagnostic, not allocator latency)")
     print(
-        f"{'kind':<10}{'window':<18}{'alloc':>9}{'free':>9}{'fail':>7}"
-        f"{'slab+':>8}{'slab-':>8}{'a_adj':>9}{'f_adj':>9}"
-        f"{'fail_a':>8}{'s+_adj':>9}{'s-_adj':>9}"
-        f"{'elapsed_ms':>12}{'peak_pg':>9}"
+        f"{'scope':<10}{'phase':<18}{'obj_allocs':>11}"
+        f"{'obj_frees':>11}{'slab_allocs':>12}{'slab_frees':>12}"
+        f"{'obj_allocs_adj':>16}{'obj_frees_adj':>15}"
+        f"{'slab_allocs_adj':>17}{'slab_frees_adj':>16}"
+        f"{'window_ms':>12}{'peak_live_slab_pages':>22}"
     )
     for window in windows:
         delta = window["delta"]
@@ -265,21 +238,20 @@ def print_timing(windows):
             adjusted = adjusted_delta(delta, control)
         window["adjusted"] = adjusted
         adjusted_values = (
-            ["-"] * 5 if adjusted is None else [
+            ["-"] * 4 if adjusted is None else [
                 str(adjusted[key]) for key in (
-                    "alloc", "free", "alloc_fail", "slab_alloc", "slab_free"
+                    "obj_allocs", "obj_frees", "slab_allocs", "slab_frees"
                 )
             ]
         )
         print(
             f"{window['kind']:<10}{window['label']:<18}"
-            f"{delta['alloc']:>9}{delta['free']:>9}{delta['alloc_fail']:>7}"
-            f"{delta['slab_alloc']:>8}{delta['slab_free']:>8}"
-            f"{adjusted_values[0]:>9}{adjusted_values[1]:>9}"
-            f"{adjusted_values[2]:>8}{adjusted_values[3]:>9}"
-            f"{adjusted_values[4]:>9}"
+            f"{delta['obj_allocs']:>11}{delta['obj_frees']:>11}"
+            f"{delta['slab_allocs']:>12}{delta['slab_frees']:>12}"
+            f"{adjusted_values[0]:>16}{adjusted_values[1]:>15}"
+            f"{adjusted_values[2]:>17}{adjusted_values[3]:>16}"
             f"{delta['elapsed_ns'] / 1_000_000:>12.3f}"
-            f"{delta['peak_live_pages']:>9}"
+            f"{delta['peak_live_slab_pages']:>22}"
         )
 
 
@@ -291,65 +263,81 @@ def cache_fragmentation(util_rows, frag_rows):
         live_slabs = frag.get("live_slabs", util.get("live_slabs", 0))
         partial = frag.get("partial_slabs", 0)
         empty = frag.get("empty_slabs", 0)
-        holes = frag.get("holes", 0)
+        free_slots = frag.get("free_slots_in_partial", 0)
         slot_size = util.get("slot_size", 0)
         object_size = util.get("object_size", 0)
         live_objects = util.get("live_objects", 0)
-        order = util.get("order", 0)
-        partial_hole_b = holes * slot_size
-        retained_empty_b = empty * (PAGE_SIZE << order)
+        slab_order = util.get("slab_order", 0)
+        partial_hole_b = free_slots * slot_size
+        retained_empty_b = empty * (PAGE_SIZE << slab_order)
         internal_padding_b = live_objects * max(0, slot_size - object_size)
         result.append({
             "cache": name,
             "live_slabs": live_slabs,
             "partial_slabs": partial,
-            "partial_ratio": partial / live_slabs if live_slabs else 0.0,
-            "holes": holes,
-            "partial_hole_B": partial_hole_b,
-            "retained_empty_B": retained_empty_b,
-            "internal_padding_B": internal_padding_b,
-            "stranded_B": (
+            "partial_slab_ratio": partial / live_slabs if live_slabs else 0.0,
+            "free_slots_in_partial": free_slots,
+            "partial_hole_bytes": partial_hole_b,
+            "retained_empty_bytes": retained_empty_b,
+            "internal_padding_bytes": internal_padding_b,
+            "fragmentation_sort_bytes": (
                 partial_hole_b + retained_empty_b + internal_padding_b
             ),
         })
     return result
 
 
+def utilization_totals(util_rows):
+    live_page_b = sum(
+        row["live_slabs"] * (PAGE_SIZE << row["slab_order"])
+        for row in util_rows.values()
+    )
+    live_slot_b = sum(
+        row["live_objects"] * row["slot_size"]
+        for row in util_rows.values()
+    )
+    return live_page_b, live_slot_b
+
+
 def snapshot_record(tag, body, cache=None):
     freq = parse_freq(section(body, "freq"))
-    util_rows, total = parse_util(section(body, "util"))
+    util_rows = parse_util(section(body, "util"))
     frag_rows = parse_frag(section(body, "frag"))
     memfree = parse_memfree(section(body, "mem"))
     buddy = parse_buddy(section(body, "buddy"))
     cache_frag = cache_fragmentation(util_rows, frag_rows)
 
-    live_page_b = total.get("live_page_B", 0)
-    live_slot_b = total.get("live_slot_B", 0)
-    live_obj_b = total.get("live_obj_B", 0)
+    live_page_b, live_slot_b = utilization_totals(util_rows)
     slot_eff = 100.0 * live_slot_b / live_page_b if live_page_b else 0.0
-    object_eff = 100.0 * live_obj_b / live_page_b if live_page_b else 0.0
 
     empty = sum(row["empty_slabs"] for row in frag_rows.values())
     partial = sum(row["partial_slabs"] for row in frag_rows.values())
     live_slabs = sum(row["live_slabs"] for row in frag_rows.values())
-    holes = sum(row["holes"] for row in frag_rows.values())
+    free_slots = sum(
+        row["free_slots_in_partial"] for row in frag_rows.values()
+    )
 
     record = {
         "tag": tag,
-        "live_pages": freq.get("live_pages", 0),
-        "peak_pages": freq.get("peak_live_pages", 0),
-        "slot_eff": slot_eff,
-        "object_eff": object_eff,
-        "empty": empty,
-        "partial": partial,
-        "partial_ratio": 100.0 * partial / live_slabs if live_slabs else 0.0,
-        "holes": holes,
-        "partial_hole_B": sum(row["partial_hole_B"] for row in cache_frag),
-        "retained_empty_B": sum(row["retained_empty_B"] for row in cache_frag),
-        "internal_padding_B": sum(
-            row["internal_padding_B"] for row in cache_frag
+        "live_slab_pages": freq.get("live_slab_pages", 0),
+        "peak_live_slab_pages": freq.get("peak_live_slab_pages", 0),
+        "slot_util_pct": slot_eff,
+        "empty_slabs": empty,
+        "partial_slabs": partial,
+        "partial_slab_pct": (
+            100.0 * partial / live_slabs if live_slabs else 0.0
         ),
-        "memfree": memfree,
+        "free_slots_in_partial": free_slots,
+        "partial_hole_bytes": sum(
+            row["partial_hole_bytes"] for row in cache_frag
+        ),
+        "retained_empty_bytes": sum(
+            row["retained_empty_bytes"] for row in cache_frag
+        ),
+        "internal_padding_bytes": sum(
+            row["internal_padding_bytes"] for row in cache_frag
+        ),
+        "mem_free_kb": memfree,
         "buddy": buddy,
         "cache_fragmentation": cache_frag,
     }
@@ -367,21 +355,25 @@ def print_snapshots(snapshot_blocks, cache, top_caches):
     ]
     print("\n# Snapshot memory and fragmentation state")
     print(
-        f"{'snapshot':<24}{'live_pg':>8}{'peak_pg':>9}"
-        f"{'slot_eff%':>11}{'obj_eff%':>10}{'empty':>7}"
-        f"{'partial':>9}{'part%':>8}{'holes':>8}"
-        f"{'hole_B':>10}{'empty_B':>10}{'pad_B':>10}{'MemFree':>9}"
+        f"{'snapshot':<24}{'live_slab_pages':>16}"
+        f"{'peak_live_slab_pages':>22}{'slot_util_pct':>15}"
+        f"{'empty_slabs':>13}{'partial_slabs':>15}"
+        f"{'partial_slab_pct':>18}{'free_slots_in_partial':>23}"
+        f"{'partial_hole_bytes':>20}{'retained_empty_bytes':>22}"
+        f"{'internal_padding_bytes':>24}{'mem_free_kb':>13}"
     )
     for record in records:
-        memfree = "-" if record["memfree"] is None else record["memfree"]
+        memfree = "-" if record["mem_free_kb"] is None else record["mem_free_kb"]
         print(
-            f"{record['tag']:<24}{record['live_pages']:>8}"
-            f"{record['peak_pages']:>9}{record['slot_eff']:>11.2f}"
-            f"{record['object_eff']:>10.2f}{record['empty']:>7}"
-            f"{record['partial']:>9}{record['partial_ratio']:>8.2f}"
-            f"{record['holes']:>8}{record['partial_hole_B']:>10}"
-            f"{record['retained_empty_B']:>10}"
-            f"{record['internal_padding_B']:>10}{str(memfree):>9}"
+            f"{record['tag']:<24}{record['live_slab_pages']:>16}"
+            f"{record['peak_live_slab_pages']:>22}"
+            f"{record['slot_util_pct']:>15.2f}"
+            f"{record['empty_slabs']:>13}{record['partial_slabs']:>15}"
+            f"{record['partial_slab_pct']:>18.2f}"
+            f"{record['free_slots_in_partial']:>23}"
+            f"{record['partial_hole_bytes']:>20}"
+            f"{record['retained_empty_bytes']:>22}"
+            f"{record['internal_padding_bytes']:>24}{str(memfree):>13}"
         )
         if cache:
             util = record.get("cache_util")
@@ -391,19 +383,21 @@ def print_snapshots(snapshot_blocks, cache, top_caches):
         if top_caches:
             rows = sorted(
                 record["cache_fragmentation"],
-                key=lambda row: row["stranded_B"],
+                key=lambda row: row["fragmentation_sort_bytes"],
                 reverse=True,
             )
-            rows = [row for row in rows if row["stranded_B"]][:top_caches]
+            rows = [
+                row for row in rows if row["fragmentation_sort_bytes"]
+            ][:top_caches]
             if rows:
                 details = ", ".join(
-                    f"{row['cache']}={row['stranded_B']}B"
-                    f"(hole={row['partial_hole_B']},"
-                    f"empty={row['retained_empty_B']},"
-                    f"pad={row['internal_padding_B']})"
+                    f"{row['cache']}={row['fragmentation_sort_bytes']}B"
+                    f"(partial_hole_bytes={row['partial_hole_bytes']},"
+                    f"retained_empty_bytes={row['retained_empty_bytes']},"
+                    f"internal_padding_bytes={row['internal_padding_bytes']})"
                     for row in rows
                 )
-                print(f"  top stranded: {details}")
+                print(f"  top fragmentation_sort_bytes: {details}")
     return records
 
 
@@ -414,15 +408,17 @@ def print_buddy(records):
     max_orders = max(len(record["buddy"]["orders"]) for record in available)
     print("\n# Buddy allocator state")
     print(
-        f"{'snapshot':<24}{'free_pages':>11}{'order>=2_pg':>13}"
-        f"{'largest':>9}  blocks by order 0..{max_orders - 1}"
+        f"{'snapshot':<24}{'buddy_free_pages':>18}"
+        f"{'buddy_high_order_free_pages':>29}"
+        f"{'buddy_largest_order':>21}"
+        f"  buddy_blocks_by_order 0..{max_orders - 1}"
     )
     for record in available:
         buddy = record["buddy"]
         counts = buddy["orders"] + [0] * (max_orders - len(buddy["orders"]))
         print(
-            f"{record['tag']:<24}{buddy['total_pages']:>11}"
-            f"{buddy['high_pages']:>13}{buddy['largest_order']:>9}  "
+            f"{record['tag']:<24}{buddy['total_pages']:>18}"
+            f"{buddy['high_pages']:>29}{buddy['largest_order']:>21}  "
             + " ".join(str(value) for value in counts)
         )
 
@@ -431,14 +427,6 @@ def snapshot_pair_key(tag):
     match = re.match(r"^(.+):(before|after)$", tag)
     if match:
         return match.group(1), match.group(2)
-    if tag == "before":
-        return "single", "before"
-    if tag == "after":
-        return "single", "after"
-    if tag.startswith("before_"):
-        return tag[7:], "before"
-    if tag.startswith("after_"):
-        return tag[6:], "after"
     return None, None
 
 
@@ -468,12 +456,15 @@ def print_size_deltas(snapshot_blocks):
         rows = []
         for name, row in new.items():
             previous = old.get(name, {})
-            alloc = delta32(previous.get("alloc", 0), row["alloc"])
+            alloc = delta32(
+                previous.get("obj_allocs", 0), row["obj_allocs"]
+            )
             requested = delta32(
-                previous.get("requested_B", 0), row["requested_B"]
+                previous.get("requested_bytes", 0), row["requested_bytes"]
             )
             allocated = delta32(
-                previous.get("allocated_B", 0), row["allocated_B"]
+                previous.get("allocated_slot_bytes", 0),
+                row["allocated_slot_bytes"],
             )
             if alloc or requested or allocated:
                 rows.append((name, alloc, requested, allocated))
@@ -484,16 +475,17 @@ def print_size_deltas(snapshot_blocks):
             rows_printed = True
         print(f"## {label}")
         print(
-            f"{'slot_class':<14}{'alloc':>10}{'requested_B':>14}"
-            f"{'allocated_B':>14}{'waste_B':>12}{'waste%':>9}"
+            f"{'slot_class':<14}{'alloc_count':>12}"
+            f"{'requested_bytes':>18}{'slot_bytes':>14}"
+            f"{'internal_waste_bytes':>23}{'internal_waste_pct':>20}"
         )
         total_alloc = total_requested = total_allocated = 0
         for name, alloc, requested, allocated in rows:
             waste_b = max(0, allocated - requested)
             waste_pct = 100.0 * waste_b / allocated if allocated else 0.0
             print(
-                f"{name:<14}{alloc:>10}{requested:>14}{allocated:>14}"
-                f"{waste_b:>12}{waste_pct:>9.2f}"
+                f"{name:<14}{alloc:>12}{requested:>18}{allocated:>14}"
+                f"{waste_b:>23}{waste_pct:>20.2f}"
             )
             total_alloc += alloc
             total_requested += requested
@@ -503,8 +495,8 @@ def print_size_deltas(snapshot_blocks):
             100.0 * total_waste / total_allocated if total_allocated else 0.0
         )
         print(
-            f"{'TOTAL':<14}{total_alloc:>10}{total_requested:>14}"
-            f"{total_allocated:>14}{total_waste:>12}{total_pct:>9.2f}"
+            f"{'TOTAL':<14}{total_alloc:>12}{total_requested:>18}"
+            f"{total_allocated:>14}{total_waste:>23}{total_pct:>20.2f}"
         )
 
 
@@ -558,20 +550,21 @@ def print_internal_timing(text):
         return
     print("\n# Small workload internal timing")
     print(
-        f"{'phase':<18}{'size':>8}{'requested':>12}{'completed':>12}"
-        f"{'elapsed_ms':>12}{'ns/pair':>11}"
+        f"{'phase':<18}{'object_size':>12}{'requested_pairs':>17}"
+        f"{'completed_pairs':>17}{'elapsed_ms':>12}"
+        f"{'ns_per_alloc_free_pair':>24}"
     )
     measured = []
     for phase, size, requested, completed, elapsed in timings:
         ns_per_pair = elapsed / max(completed, 1)
         print(
-            f"{phase:<18}{size:>8}{requested:>12}{completed:>12}"
-            f"{elapsed / 1_000_000:>12.3f}{ns_per_pair:>11.1f}"
+            f"{phase:<18}{size:>12}{requested:>17}{completed:>17}"
+            f"{elapsed / 1_000_000:>12.3f}{ns_per_pair:>24.1f}"
         )
         if phase != "warmup":
             measured.append(ns_per_pair)
     print_stats("Small timing distribution (warmup excluded)", [
-        ("ns/pair", measured),
+        ("ns_per_alloc_free_pair", measured),
     ])
 
 
@@ -609,18 +602,20 @@ def print_window_stats(windows):
                 adjusted_groups.setdefault(group, []).append(window["adjusted"])
     for group, workload in groups.items():
         print_stats(f"Raw '{group}' window distribution", [
-            ("alloc", [row["alloc"] for row in workload]),
-            ("free", [row["free"] for row in workload]),
-            ("slab_alloc", [row["slab_alloc"] for row in workload]),
-            ("slab_free", [row["slab_free"] for row in workload]),
-            ("peak_live_pages", [row["peak_live_pages"] for row in workload]),
+            ("obj_allocs", [row["obj_allocs"] for row in workload]),
+            ("obj_frees", [row["obj_frees"] for row in workload]),
+            ("slab_allocs", [row["slab_allocs"] for row in workload]),
+            ("slab_frees", [row["slab_frees"] for row in workload]),
+            ("peak_live_slab_pages", [
+                row["peak_live_slab_pages"] for row in workload
+            ]),
         ])
     for group, workload in adjusted_groups.items():
         print_stats(f"Control-adjusted '{group}' window distribution", [
-            ("alloc", [row["alloc"] for row in workload]),
-            ("free", [row["free"] for row in workload]),
-            ("slab_alloc", [row["slab_alloc"] for row in workload]),
-            ("slab_free", [row["slab_free"] for row in workload]),
+            ("obj_allocs", [row["obj_allocs"] for row in workload]),
+            ("obj_frees", [row["obj_frees"] for row in workload]),
+            ("slab_allocs", [row["slab_allocs"] for row in workload]),
+            ("slab_frees", [row["slab_frees"] for row in workload]),
         ])
 
 
@@ -635,11 +630,17 @@ def print_snapshot_stats(records):
             groups.setdefault(group, []).append(record)
     for group, after in groups.items():
         print_stats(f"'{group}' after-snapshot distribution", [
-            ("live_pages", [row["live_pages"] for row in after]),
-            ("partial_slabs", [row["partial"] for row in after]),
-            ("partial_ratio_pct", [row["partial_ratio"] for row in after]),
-            ("holes", [row["holes"] for row in after]),
-            ("partial_hole_B", [row["partial_hole_B"] for row in after]),
+            ("live_slab_pages", [row["live_slab_pages"] for row in after]),
+            ("partial_slabs", [row["partial_slabs"] for row in after]),
+            ("partial_slab_pct", [
+                row["partial_slab_pct"] for row in after
+            ]),
+            ("free_slots_in_partial", [
+                row["free_slots_in_partial"] for row in after
+            ]),
+            ("partial_hole_bytes", [
+                row["partial_hole_bytes"] for row in after
+            ]),
             ("buddy_free_pages", [row["buddy"]["total_pages"] for row in after]),
         ])
 
@@ -650,7 +651,10 @@ def main():
     parser.add_argument("--cache", help="show one cache's raw util/frag rows")
     parser.add_argument(
         "--top-caches", type=int, default=5,
-        help="show this many caches ranked by stranded bytes (default: 5)",
+        help=(
+            "show this many caches ranked by fragmentation_sort_bytes "
+            "(default: 5)"
+        ),
     )
     args = parser.parse_args()
 

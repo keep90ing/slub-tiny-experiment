@@ -4,16 +4,15 @@ Date: Sun, 14 Jun 2026 17:31:28 +0800
 Subject: [PATCH 3/4] mm/slub: add optional utilization instrumentation
 
 ---
- mm/Kconfig | 15 ++++++++++++
- mm/slab.h  |  7 ++++++
- mm/slub.c  | 71 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 93 insertions(+)
+ mm/Kconfig  | 15 +++++++++++++++
+ mm/slab.h   | 5 +++++
+ mm/slub.c   | 43 +++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 63 insertions(+)
 
 diff --git a/mm/Kconfig b/mm/Kconfig
-index 27259d64c..c0e0a63e3 100644
 --- a/mm/Kconfig
 +++ b/mm/Kconfig
-@@ -234,6 +234,21 @@ config SLUB_TINY_INST_SIZES
+@@ -234,6 +234,21 @@
  
  	  If unsure, say N.
  
@@ -22,11 +21,11 @@ index 27259d64c..c0e0a63e3 100644
 +	depends on SLUB_TINY_INSTRUMENTATION
 +	default n
 +	help
-+	  Expose /proc/slub_tiny_util with raw cache geometry, current
-+	  object/slab/page gauges and a per-cache peak page count.
++	  Expose /proc/slub_tiny_util with raw cache geometry and current
++	  object/slab gauges. Host tooling derives page/slot bytes.
 +
 +	  This adds two plain 32-bit updates to each successful object
-+	  allocation/free and page gauges to slab birth/death. Percentages
++	  allocation/free and slab gauges to slab birth/death. Percentages
 +	  are intentionally derived by host tooling rather than in-kernel.
 +
 +	  Enable this for page-efficiency, order and partial-slab studies.
@@ -35,29 +34,27 @@ index 27259d64c..c0e0a63e3 100644
  config SLAB_FREELIST_RANDOM
  	bool "Randomize slab freelist"
  	depends on !SLUB_TINY
+
 diff --git a/mm/slab.h b/mm/slab.h
-index e9ab292ac..33bbe1ec0 100644
 --- a/mm/slab.h
 +++ b/mm/slab.h
-@@ -247,6 +247,13 @@ struct kmem_cache {
+@@ -247,6 +247,11 @@
  	struct kmem_cache_stats __percpu *cpu_stats;
  #endif
  
 +#ifdef CONFIG_SLUB_TINY_INST_UTIL
 +	unsigned int live_objects;
 +	unsigned int live_slabs;
-+	unsigned int live_pages;
-+	unsigned int peak_live_pages;
 +#endif
 +
  	struct kmem_cache_node *node[MAX_NUMNODES];
  };
  
+
 diff --git a/mm/slub.c b/mm/slub.c
-index b717a2037..8f7e78681 100644
 --- a/mm/slub.c
 +++ b/mm/slub.c
-@@ -3477,6 +3477,9 @@
+@@ -3474,6 +3474,9 @@
  #endif
  
  		slub_tiny_alloc++;
@@ -67,57 +64,37 @@ index b717a2037..8f7e78681 100644
  #ifdef CONFIG_SLUB_TINY_INST_SIZES
  		slub_tiny_sz[bucket]++;
  		slub_tiny_sz_req[bucket] += req;
-@@ -3493,6 +3496,9 @@
+@@ -3485,6 +3488,9 @@
+ static inline void slub_tiny_inst_free(struct kmem_cache *s)
  {
  	slub_tiny_free++;
- 	slub_tiny_live--;
 +#ifdef CONFIG_SLUB_TINY_INST_UTIL
 +	s->live_objects--;
 +#endif
  }
  
  static inline void slub_tiny_inst_slab_alloc(struct kmem_cache *s,
-@@ -3504,6 +3510,12 @@
+@@ -3496,6 +3502,9 @@
  	slub_tiny_live_pages += pages;
  	if (slub_tiny_live_pages > slub_tiny_peak_live_pages)
  		slub_tiny_peak_live_pages = slub_tiny_live_pages;
 +#ifdef CONFIG_SLUB_TINY_INST_UTIL
-+	s->live_pages += pages;
 +	s->live_slabs++;
-+	if (s->live_pages > s->peak_live_pages)
-+		s->peak_live_pages = s->live_pages;
 +#endif
  }
  
  static inline void slub_tiny_inst_slab_free(struct kmem_cache *s,
-@@ -3511,12 +3523,26 @@
+@@ -3503,6 +3512,9 @@
  {
  	slub_tiny_slab_free++;
  	slub_tiny_live_pages -= 1U << slab_order(slab);
 +#ifdef CONFIG_SLUB_TINY_INST_UTIL
 +	s->live_slabs--;
-+	s->live_pages -= 1U << slab_order(slab);
 +#endif
  }
  
  static void slub_tiny_inst_rebase(void)
- {
- 	slub_tiny_peak_inflight = slub_tiny_live;
- 	slub_tiny_peak_live_pages = slub_tiny_live_pages;
-+#ifdef CONFIG_SLUB_TINY_INST_UTIL
-+	{
-+		struct kmem_cache *s;
-+
-+		mutex_lock(&slab_mutex);
-+		list_for_each_entry(s, &slab_caches, list)
-+			s->peak_live_pages = s->live_pages;
-+		mutex_unlock(&slab_mutex);
-+	}
-+#endif
- }
- 
- static int slub_tiny_freq_show(struct seq_file *m, void *v)
-@@ -3602,6 +3628,51 @@
+@@ -3590,6 +3602,37 @@
  }
  late_initcall(slub_tiny_sizes_init);
  #endif
@@ -125,36 +102,22 @@ index b717a2037..8f7e78681 100644
 +#ifdef CONFIG_SLUB_TINY_INST_UTIL
 +static int slub_tiny_util_show(struct seq_file *m, void *v)
 +{
-+	unsigned long long live_page_b = 0;
-+	unsigned long long live_slot_b = 0;
-+	unsigned long long live_obj_b = 0;
-+	u64 timestamp_ns = ktime_get_ns();
 +	struct kmem_cache *s;
 +
-+	seq_printf(m, "timestamp_ns %llu\n",
-+		   (unsigned long long)timestamp_ns);
-+	seq_puts(m, "cache object_size slot_size order objects_per_slab live_objects live_slabs live_pages peak_live_pages\n");
++	seq_puts(m, "cache_name object_size slot_size slab_order objects_per_slab live_objects live_slabs\n");
 +
 +	mutex_lock(&slab_mutex);
 +	list_for_each_entry(s, &slab_caches, list) {
 +		int live_raw = (int)s->live_objects;
 +		unsigned int live = live_raw > 0 ? live_raw : 0;
 +
-+		live_page_b += (unsigned long long)s->live_pages * PAGE_SIZE;
-+		live_slot_b += (unsigned long long)live * s->size;
-+		live_obj_b += (unsigned long long)live * s->object_size;
-+
-+		seq_printf(m, "%s %u %u %u %u %u %u %u %u\n",
++		seq_printf(m, "%s %u %u %u %u %u %u\n",
 +			   s->name, s->object_size, s->size,
 +			   oo_order(s->oo), oo_objects(s->oo),
-+			   live, s->live_slabs, s->live_pages,
-+			   s->peak_live_pages);
++			   live, s->live_slabs);
 +	}
 +	mutex_unlock(&slab_mutex);
 +
-+	seq_printf(m,
-+		   "TOTAL live_page_B %llu live_slot_B %llu live_obj_B %llu\n",
-+		   live_page_b, live_slot_b, live_obj_b);
 +	return 0;
 +}
 +
