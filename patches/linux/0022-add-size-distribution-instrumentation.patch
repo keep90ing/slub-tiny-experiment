@@ -54,9 +54,9 @@ diff --git a/mm/slub.c b/mm/slub.c
 +};
 +
 +static const char * const slub_tiny_size_label[SLUB_TINY_SIZE_BUCKETS] = {
-+	"slot-32",   "slot-64",   "slot-96",   "slot-128",
-+	"slot-192",  "slot-256",  "slot-512",  "slot-1024",
-+	"slot-2048", "slot-4096", "slot-8192", ">8192",
++	"slot_le_32",   "slot_le_64",   "slot_le_96",   "slot_le_128",
++	"slot_le_192",  "slot_le_256",  "slot_le_512",  "slot_le_1024",
++	"slot_le_2048", "slot_le_4096", "slot_le_8192", "slot_gt_8192",
 +};
 +
 +static inline unsigned int slub_tiny_size_bucket(unsigned int size)
@@ -99,7 +99,7 @@ diff --git a/mm/slub.c b/mm/slub.c
 +{
 +	unsigned int i;
 +
-+	seq_puts(m, "slot_size_class obj_allocs requested_bytes allocated_slot_bytes\n");
++	seq_puts(m, "slot_size_class obj_allocs requested_or_object_bytes allocated_slot_bytes\n");
 +	for (i = 0; i < SLUB_TINY_SIZE_BUCKETS; i++) {
 +		seq_printf(m, "%s %u %u %u\n",
 +			   slub_tiny_size_label[i],
