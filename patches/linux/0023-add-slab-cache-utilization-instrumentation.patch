@@ -5,9 +5,9 @@ Subject: [PATCH 3/4] mm/slub: add optional utilization snapshot instrumentation
 
 ---
  mm/Kconfig  | 15 +++++++++++++++
- mm/slab.h   | 5 +++++
- mm/slub.c   | 40 ++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 60 insertions(+)
+ mm/slab.h   | 10 ++++++++++
+ mm/slub.c   | 48 ++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 73 insertions(+)
 
 diff --git a/mm/Kconfig b/mm/Kconfig
 --- a/mm/Kconfig

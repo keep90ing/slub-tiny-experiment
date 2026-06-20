@@ -46,11 +46,8 @@ index 000000000..31f2aacb2
 +{
 +	echo "===SNAP $1==="
 +	metric freq /proc/slub_tiny_freq
++	metric sizes /proc/slub_tiny_sizes
 +	metric snapshot /proc/slub_tiny_snapshot
-+	if [ ! -r /proc/slub_tiny_snapshot ]; then
-+		metric util /proc/slub_tiny_util
-+		metric frag /proc/slub_tiny_frag
-+	fi
 +	echo "--mem--"
 +	head -3 /proc/meminfo
 +	metric buddy /proc/buddyinfo
@@ -134,6 +131,14 @@ index 000000000..31f2aacb2
 +fi
 +if [ ! -r /proc/mounts ]; then
 +	echo "/proc/mounts unavailable"
++	exit 1
++fi
++if [ ! -r /proc/slub_tiny_snapshot ]; then
++	echo "/proc/slub_tiny_snapshot unavailable"
++	exit 1
++fi
++if [ ! -r /proc/slub_tiny_sizes ]; then
++	echo "/proc/slub_tiny_sizes unavailable"
 +	exit 1
 +fi
 +

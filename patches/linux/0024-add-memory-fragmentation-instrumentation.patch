@@ -4,9 +4,9 @@ Date: Sun, 14 Jun 2026 17:31:29 +0800
 Subject: [PATCH 4/4] mm/slub: add optional raw fragmentation scan
 
 ---
- mm/Kconfig  | 15 +++++++++++++++
- mm/slub.c   | 49 +++++++++++++++++++++++++++++++++++++++++++++----
- 2 files changed, 61 insertions(+), 4 deletions(-)
+ mm/Kconfig  | 16 ++++++++++++++++
+ mm/slub.c   | 52 ++++++++++++++++++++++++++++++++++++++++++++++++----
+ 2 files changed, 64 insertions(+), 4 deletions(-)
 
 diff --git a/mm/Kconfig b/mm/Kconfig
 --- a/mm/Kconfig
@@ -38,13 +38,13 @@ diff --git a/mm/Kconfig b/mm/Kconfig
 diff --git a/mm/slub.c b/mm/slub.c
 --- a/mm/slub.c
 +++ b/mm/slub.c
-@@ -3605,15 +3605,60 @@
+@@ -3611,18 +3611,62 @@
+ #ifdef CONFIG_SLUB_TINY_INST_UTIL
  static int slub_tiny_snapshot_show(struct seq_file *m, void *v)
  {
  	struct kmem_cache *s;
 
 -	seq_puts(m, "cache_name object_size slot_size slab_order objs_per_slab live_objects live_slabs\n");
-+	seq_puts(m, "version 1\n");
 +	seq_puts(m, "cache_name object_size slot_size slab_order objs_per_slab live_objects live_slabs frag_scan objects_total objects empty_slabs partial_slabs objects_partial free_slots_in_nonempty_partial partial_free_objects tracked_capacity_objects tracked_live_slab_pages tracked_tail_padding_bytes\n");
  
  	mutex_lock(&slab_mutex);
@@ -103,5 +103,7 @@ diff --git a/mm/slub.c b/mm/slub.c
  	}
  	mutex_unlock(&slab_mutex);
  
+ 	return 0;
+ }
 -- 
 2.54.0

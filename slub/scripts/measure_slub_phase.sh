@@ -30,6 +30,10 @@ if [ -z "$PROC" ] || [ -z "$ARGS" ]; then
 	echo "usage: sh measure_slub_phase.sh <slub_wl_NAME> \"<args>\" [phase] [cleanup-args]"
 	exit 1
 fi
+if [ ! -r /proc/slub_tiny_snapshot ]; then
+	echo "/proc/slub_tiny_snapshot unavailable" >&2
+	exit 1
+fi
 
 snap() {
 	echo "===SNAP $1==="
@@ -42,17 +46,6 @@ snap() {
 			echo "unavailable"
 		fi
 	done
-	if [ ! -r /proc/slub_tiny_snapshot ]; then
-		for name in util frag; do
-			echo "--$name--"
-			path="/proc/slub_tiny_$name"
-			if [ -r "$path" ]; then
-				cat "$path"
-			else
-				echo "unavailable"
-			fi
-		done
-	fi
 	echo "--mem--";   head -3 /proc/meminfo
 	echo "--buddy--"; cat /proc/buddyinfo
 	echo "===ENDSNAP $1==="
