@@ -4,9 +4,9 @@ Date: Sun, 14 Jun 2026 17:35:24 +0800
 Subject: [PATCH 5/5] selftests: add real VFS SLUB_TINY workload helpers
 
 ---
- .../testing/selftests/mm/slub_tiny_realvfs.sh | 135 +++++++
+ .../testing/selftests/mm/slub_tiny_realvfs.sh | 140 ++++++++
  tools/testing/selftests/mm/slub_tiny_vfs.c    | 380 ++++++++++++++++++
- 2 files changed, 515 insertions(+)
+ 2 files changed, 520 insertions(+)
  create mode 100644 tools/testing/selftests/mm/slub_tiny_realvfs.sh
  create mode 100644 tools/testing/selftests/mm/slub_tiny_vfs.c
 
@@ -15,7 +15,7 @@ new file mode 100644
 index 000000000..31f2aacb2
 --- /dev/null
 +++ b/tools/testing/selftests/mm/slub_tiny_realvfs.sh
-@@ -0,0 +1,135 @@
+@@ -0,0 +1,140 @@
 +#!/bin/sh
 +# Real VFS metadata churn for the STM32F429 image.
 +#

@@ -6,8 +6,8 @@ Subject: [PATCH 2/5] mm: merge burst and churn SLUB_TINY workloads
 ---
  mm/Kconfig         |  12 ++
  mm/Makefile        |   1 +
- mm/slub_wl_churn.c | 297 +++++++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 310 insertions(+)
+ mm/slub_wl_churn.c | 285 ++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 298 insertions(+)
  create mode 100644 mm/slub_wl_churn.c
 
 diff --git a/mm/Kconfig b/mm/Kconfig
@@ -47,10 +47,10 @@ index 3c6663ef3..44e964918 100644
  	obj-$(CONFIG_ADVISE_SYSCALLS)	+= madvise.o
 diff --git a/mm/slub_wl_churn.c b/mm/slub_wl_churn.c
 new file mode 100644
-index 000000000..971674781
+index 000000000..0ee64eede
 --- /dev/null
 +++ b/mm/slub_wl_churn.c
-@@ -0,0 +1,297 @@
+@@ -0,0 +1,285 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Combined burst and steady-state fragmentation workload.
@@ -264,7 +264,6 @@ index 000000000..971674781
 +	unsigned int b = 0;
 +	unsigned int c = 0;
 +	unsigned int seed = CHURN_DEFAULT_SEED;
-+	unsigned int result;
 +	int parsed;
 +
 +	if (!length || length >= sizeof(input))
@@ -284,9 +283,7 @@ index 000000000..971674781
 +		    b > KMALLOC_MAX_CACHE_SIZE ||
 +		    (u64)a * b > CHURN_BYTES_MAX)
 +			goto invalid;
-+		result = fill_locked(a, b);
-+		pr_info("slub_wl_churn: fill count=%u size=%u live=%u\n",
-+			result, b, churn_live);
++		fill_locked(a, b);
 +	} else if (!strcmp(verb, "release")) {
 +		if (parsed < 2 || (parsed >= 3 && b > CHURN_RANDOM))
 +			goto invalid;
@@ -294,39 +291,30 @@ index 000000000..971674781
 +			b = CHURN_FIFO;
 +		if (parsed >= 4)
 +			churn_state = c;
-+		result = release_stride_locked(a, b);
-+		pr_info("slub_wl_churn: release stride=%u order=%u freed=%u live=%u\n",
-+			a, b, result, churn_live);
++		release_stride_locked(a, b);
 +	} else if (!strcmp(verb, "free")) {
 +		if (parsed < 3 || a > 1000 || b > CHURN_RANDOM)
 +			goto invalid;
 +		if (parsed >= 4)
 +			churn_state = c;
-+		result = free_random_locked(a, b);
-+		pr_info("slub_wl_churn: free permille=%u order=%u freed=%u live=%u\n",
-+			a, b, result, churn_live);
++		free_random_locked(a, b);
 +	} else if (!strcmp(verb, "refill")) {
 +		if (parsed != 1)
 +			goto invalid;
-+		result = refill_locked();
-+		pr_info("slub_wl_churn: refill allocated=%u live=%u\n",
-+			result, churn_live);
++		refill_locked();
 +	} else if (!strcmp(verb, "churn")) {
 +		if (parsed < 4 || !a || a > CHURN_MAX_ROUNDS ||
 +		    b > 1000 || c > CHURN_RANDOM)
 +			goto invalid;
 +		if (parsed >= 5)
 +			churn_state = seed;
-+		result = churn_locked(a, b, c);
-+		pr_info("slub_wl_churn: rounds=%u permille=%u order=%u replaced=%u live=%u\n",
-+			a, b, c, result, churn_live);
++		churn_locked(a, b, c);
 +	} else if (!strcmp(verb, "drain")) {
 +		if (parsed >= 2 && a > CHURN_RANDOM)
 +			goto invalid;
 +		if (parsed < 2)
 +			a = CHURN_FIFO;
-+		result = drain_locked(a);
-+		pr_info("slub_wl_churn: drain order=%u freed=%u\n", a, result);
++		drain_locked(a);
 +	} else {
 +		goto invalid;
 +	}
