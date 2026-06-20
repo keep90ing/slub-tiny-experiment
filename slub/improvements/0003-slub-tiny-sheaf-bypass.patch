@@ -4,8 +4,8 @@ Date: Tue, 16 Jun 2026 21:49:57 +0800
 Subject: [PATCH 3/6] mm/slub: bypass per-CPU sheaves for SLUB_TINY
 
 ---
- mm/slub.c | 28 +++++++++++++++++++++-------
- 1 file changed, 21 insertions(+), 7 deletions(-)
+ mm/slub.c | 27 ++++++++++++++++++++-------
+ 1 file changed, 20 insertions(+), 7 deletions(-)
 
 diff --git a/mm/slub.c b/mm/slub.c
 --- a/mm/slub.c

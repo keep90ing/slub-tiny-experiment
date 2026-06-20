@@ -4,8 +4,8 @@ Date: Tue, 16 Jun 2026 21:50:01 +0800
 Subject: [PATCH 5/6] mm/slub: replace SLUB_TINY pointer freelist with a bitmap
 
 ---
- mm/slub.c | 140 ++++++++++++++++++++++++++++++++++++++++++++++-------
- 1 file changed, 128 insertions(+), 12 deletions(-)
+ mm/slub.c | 214 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 202 insertions(+), 12 deletions(-)
 
 diff --git a/mm/slub.c b/mm/slub.c
 index 8a63bf87f..d0beb851f 100644
