@@ -33,7 +33,7 @@ fi
 
 snap() {
 	echo "===SNAP $1==="
-	for name in freq sizes util frag; do
+	for name in freq sizes snapshot; do
 		echo "--$name--"
 		path="/proc/slub_tiny_$name"
 		if [ -r "$path" ]; then
@@ -42,6 +42,17 @@ snap() {
 			echo "unavailable"
 		fi
 	done
+	if [ ! -r /proc/slub_tiny_snapshot ]; then
+		for name in util frag; do
+			echo "--$name--"
+			path="/proc/slub_tiny_$name"
+			if [ -r "$path" ]; then
+				cat "$path"
+			else
+				echo "unavailable"
+			fi
+		done
+	fi
 	echo "--mem--";   head -3 /proc/meminfo
 	echo "--buddy--"; cat /proc/buddyinfo
 	echo "===ENDSNAP $1==="

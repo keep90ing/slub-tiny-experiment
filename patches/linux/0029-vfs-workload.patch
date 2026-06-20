@@ -4,9 +4,9 @@ Date: Sun, 14 Jun 2026 17:35:24 +0800
 Subject: [PATCH 5/5] selftests: add real VFS SLUB_TINY workload helpers
 
 ---
- .../testing/selftests/mm/slub_tiny_realvfs.sh | 132 +++++++
+ .../testing/selftests/mm/slub_tiny_realvfs.sh | 135 +++++++
  tools/testing/selftests/mm/slub_tiny_vfs.c    | 380 ++++++++++++++++++
- 2 files changed, 512 insertions(+)
+ 2 files changed, 515 insertions(+)
  create mode 100644 tools/testing/selftests/mm/slub_tiny_realvfs.sh
  create mode 100644 tools/testing/selftests/mm/slub_tiny_vfs.c
 
@@ -15,7 +15,7 @@ new file mode 100644
 index 000000000..31f2aacb2
 --- /dev/null
 +++ b/tools/testing/selftests/mm/slub_tiny_realvfs.sh
-@@ -0,0 +1,132 @@
+@@ -0,0 +1,135 @@
 +#!/bin/sh
 +# Real VFS metadata churn for the STM32F429 image.
 +#
@@ -46,8 +46,11 @@ index 000000000..31f2aacb2
 +{
 +	echo "===SNAP $1==="
 +	metric freq /proc/slub_tiny_freq
-+	metric util /proc/slub_tiny_util
-+	metric frag /proc/slub_tiny_frag
++	metric snapshot /proc/slub_tiny_snapshot
++	if [ ! -r /proc/slub_tiny_snapshot ]; then
++		metric util /proc/slub_tiny_util
++		metric frag /proc/slub_tiny_frag
++	fi
 +	echo "--mem--"
 +	head -3 /proc/meminfo
 +	metric buddy /proc/buddyinfo

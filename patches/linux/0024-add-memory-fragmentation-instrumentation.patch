@@ -5,13 +5,13 @@ Subject: [PATCH 4/4] mm/slub: add optional raw fragmentation scan
 
 ---
  mm/Kconfig  | 15 +++++++++++++++
- mm/slub.c   | 47 +++++++++++++++++++++++++++++++++++++++++++++++
- 2 files changed, 62 insertions(+)
+ mm/slub.c   | 49 +++++++++++++++++++++++++++++++++++++++++++++----
+ 2 files changed, 61 insertions(+), 4 deletions(-)
 
 diff --git a/mm/Kconfig b/mm/Kconfig
 --- a/mm/Kconfig
 +++ b/mm/Kconfig
-@@ -249,6 +249,21 @@
+@@ -249,6 +249,22 @@
  	  Enable this for page-efficiency, order and partial-slab studies.
  	  If unsure, say N.
  
@@ -20,8 +20,9 @@ diff --git a/mm/Kconfig b/mm/Kconfig
 +	depends on SLUB_TINY_INST_UTIL
 +	default n
 +	help
-+	  Expose /proc/slub_tiny_frag with raw counts of retained empty
-+	  slabs, non-empty partial slabs and free slots in partial slabs.
++	  Extend /proc/slub_tiny_snapshot with raw counts of retained
++	  empty slabs, non-empty partial slabs, partial-list object counts
++	  and free slots in partial slabs.
 +
 +	  This adds no allocation/free hot-path work. Reading the proc file
 +	  scans partial slabs under the node list lock, so take snapshots
@@ -37,59 +38,70 @@ diff --git a/mm/Kconfig b/mm/Kconfig
 diff --git a/mm/slub.c b/mm/slub.c
 --- a/mm/slub.c
 +++ b/mm/slub.c
-@@ -3646,6 +3646,53 @@
- }
- late_initcall(slub_tiny_util_init);
- #endif
-+
-+#ifdef CONFIG_SLUB_TINY_INST_FRAG
-+static int slub_tiny_frag_show(struct seq_file *m, void *v)
-+{
-+	struct kmem_cache *s;
-+
-+	seq_puts(m, "cache_name live_slabs empty_slabs partial_slabs free_slots_in_partial\n");
-+
-+	mutex_lock(&slab_mutex);
-+	list_for_each_entry(s, &slab_caches, list) {
+@@ -3605,15 +3605,60 @@
+ static int slub_tiny_snapshot_show(struct seq_file *m, void *v)
+ {
+ 	struct kmem_cache *s;
+
+-	seq_puts(m, "cache_name object_size slot_size slab_order objs_per_slab live_objects live_slabs\n");
++	seq_puts(m, "version 1\n");
++	seq_puts(m, "cache_name object_size slot_size slab_order objs_per_slab live_objects live_slabs frag_scan objects_total objects empty_slabs partial_slabs objects_partial free_slots_in_nonempty_partial partial_free_objects tracked_capacity_objects tracked_live_slab_pages tracked_tail_padding_bytes\n");
+ 
+ 	mutex_lock(&slab_mutex);
+ 	list_for_each_entry(s, &slab_caches, list) {
+-		seq_printf(m, "%s %u %u %u %u %d %d\n",
++		unsigned int objs_per_slab = oo_objects(s->oo);
++		long objects_total = (long)s->live_slabs * objs_per_slab;
++		long objects = -1;
 +		unsigned long empty_slabs = 0;
 +		unsigned long partial_slabs = 0;
++		unsigned long objects_partial = 0;
 +		unsigned long free_slots = 0;
++		unsigned long partial_free = 0;
++		unsigned int frag_scan = 0;
++
++#ifdef CONFIG_SLUB_TINY_INST_FRAG
 +		struct kmem_cache_node *n;
 +		struct slab *slab;
 +		unsigned long flags;
 +		int node;
 +
++		frag_scan = 1;
 +		for_each_kmem_cache_node(s, node, n) {
 +			spin_lock_irqsave(&n->list_lock, flags);
 +			list_for_each_entry(slab, &n->partial, slab_list) {
++				unsigned int slab_free;
++
++				slab_free = slab->objects - slab->inuse;
++				partial_free += slab_free;
 +				if (!slab->inuse) {
 +					empty_slabs++;
 +					continue;
 +				}
 +				partial_slabs++;
-+				free_slots += slab->objects - slab->inuse;
++				objects_partial += slab->inuse;
++				free_slots += slab_free;
 +			}
 +			spin_unlock_irqrestore(&n->list_lock, flags);
 +		}
-+
-+		seq_printf(m, "%s %u %lu %lu %lu\n",
-+			   s->name, s->live_slabs, empty_slabs,
-+			   partial_slabs, free_slots);
-+	}
-+	mutex_unlock(&slab_mutex);
-+	return 0;
-+}
-+
-+static int __init slub_tiny_frag_init(void)
-+{
-+	proc_create_single("slub_tiny_frag", 0444, NULL,
-+			   slub_tiny_frag_show);
-+	return 0;
-+}
-+late_initcall(slub_tiny_frag_init);
++		objects =
++			objects_total - (long)partial_free;
 +#endif
- #else
- static inline void slub_tiny_inst_alloc(struct kmem_cache *s, void *object,
- 					size_t orig_size) { }
++
++		seq_printf(m, "%s %u %u %u %u %d %d %u %ld %ld %lu %lu %lu %lu %lu %ld %ld %ld\n",
+ 			   s->name, s->object_size, s->size,
+-			   oo_order(s->oo), oo_objects(s->oo),
+-			   s->live_objects, s->live_slabs);
++			   oo_order(s->oo), objs_per_slab,
++			   s->live_objects, s->live_slabs, frag_scan,
++			   objects_total, objects,
++			   empty_slabs, partial_slabs, objects_partial,
++			   free_slots, partial_free,
++			   s->tracked_capacity_objects,
++			   s->tracked_live_slab_pages,
++			   s->tracked_tail_padding_bytes);
+ 	}
+ 	mutex_unlock(&slab_mutex);
+ 
 -- 
 2.54.0

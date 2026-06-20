@@ -1,13 +1,13 @@
 From 1561c38beca8a1816d01b5bd34f2bc1046ff2eca Mon Sep 17 00:00:00 2001
 From: Wilson Zeng <cheng20011202@gmail.com>
 Date: Sun, 14 Jun 2026 17:31:28 +0800
-Subject: [PATCH 3/4] mm/slub: add optional utilization instrumentation
+Subject: [PATCH 3/4] mm/slub: add optional utilization snapshot instrumentation
 
 ---
  mm/Kconfig  | 15 +++++++++++++++
  mm/slab.h   | 5 +++++
- mm/slub.c   | 43 +++++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 63 insertions(+)
+ mm/slub.c   | 40 ++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 60 insertions(+)
 
 diff --git a/mm/Kconfig b/mm/Kconfig
 --- a/mm/Kconfig
@@ -21,8 +21,8 @@ diff --git a/mm/Kconfig b/mm/Kconfig
 +	depends on SLUB_TINY_INSTRUMENTATION
 +	default n
 +	help
-+	  Expose /proc/slub_tiny_util with raw cache geometry and current
-+	  object/slab gauges. Host tooling derives page/slot bytes.
++	  Expose /proc/slub_tiny_snapshot with raw cache geometry and
++	  current object/slab gauges. Host tooling derives page/slot bytes.
 +
 +	  This adds two plain 32-bit updates to each successful object
 +	  allocation/free and slab gauges to slab birth/death. Percentages
@@ -38,13 +38,18 @@ diff --git a/mm/Kconfig b/mm/Kconfig
 diff --git a/mm/slab.h b/mm/slab.h
 --- a/mm/slab.h
 +++ b/mm/slab.h
-@@ -247,6 +247,11 @@
+@@ -247,6 +247,16 @@
  	struct kmem_cache_stats __percpu *cpu_stats;
  #endif
- 
+
 +#ifdef CONFIG_SLUB_TINY_INST_UTIL
-+	unsigned int live_objects;
-+	unsigned int live_slabs;
++	int live_objects;
++	int live_slabs;
++	/* actual slab geometry, accumulated at slab birth/death (no uniform
++	 * order assumption): host tooling prefers these over live_slabs*oo. */
++	long tracked_capacity_objects;
++	long tracked_live_slab_pages;
++	long tracked_tail_padding_bytes;
 +#endif
 +
  	struct kmem_cache_node *node[MAX_NUMNODES];
@@ -74,60 +79,65 @@ diff --git a/mm/slub.c b/mm/slub.c
  }
  
  static inline void slub_tiny_inst_slab_alloc(struct kmem_cache *s,
-@@ -3496,6 +3502,9 @@
+@@ -3496,6 +3502,13 @@
  	slub_tiny_live_pages += pages;
  	if (slub_tiny_live_pages > slub_tiny_peak_live_pages)
  		slub_tiny_peak_live_pages = slub_tiny_live_pages;
 +#ifdef CONFIG_SLUB_TINY_INST_UTIL
 +	s->live_slabs++;
++	s->tracked_capacity_objects += slab->objects;
++	s->tracked_live_slab_pages += pages;
++	s->tracked_tail_padding_bytes +=
++		(PAGE_SIZE << slab_order(slab)) - slab->objects * s->size;
 +#endif
  }
  
  static inline void slub_tiny_inst_slab_free(struct kmem_cache *s,
-@@ -3503,6 +3512,9 @@
+@@ -3503,6 +3512,13 @@
  {
  	slub_tiny_slab_free++;
  	slub_tiny_live_pages -= 1U << slab_order(slab);
 +#ifdef CONFIG_SLUB_TINY_INST_UTIL
 +	s->live_slabs--;
++	s->tracked_capacity_objects -= slab->objects;
++	s->tracked_live_slab_pages -= 1U << slab_order(slab);
++	s->tracked_tail_padding_bytes -=
++		(PAGE_SIZE << slab_order(slab)) - slab->objects * s->size;
 +#endif
  }
  
  static void slub_tiny_inst_rebase(void)
-@@ -3590,6 +3602,37 @@
+@@ -3590,6 +3602,34 @@
  }
  late_initcall(slub_tiny_sizes_init);
  #endif
 +
 +#ifdef CONFIG_SLUB_TINY_INST_UTIL
-+static int slub_tiny_util_show(struct seq_file *m, void *v)
++static int slub_tiny_snapshot_show(struct seq_file *m, void *v)
 +{
 +	struct kmem_cache *s;
 +
-+	seq_puts(m, "cache_name object_size slot_size slab_order objects_per_slab live_objects live_slabs\n");
++	seq_puts(m, "cache_name object_size slot_size slab_order objs_per_slab live_objects live_slabs\n");
 +
 +	mutex_lock(&slab_mutex);
 +	list_for_each_entry(s, &slab_caches, list) {
-+		int live_raw = (int)s->live_objects;
-+		unsigned int live = live_raw > 0 ? live_raw : 0;
-+
-+		seq_printf(m, "%s %u %u %u %u %u %u\n",
++		seq_printf(m, "%s %u %u %u %u %d %d\n",
 +			   s->name, s->object_size, s->size,
 +			   oo_order(s->oo), oo_objects(s->oo),
-+			   live, s->live_slabs);
++			   s->live_objects, s->live_slabs);
 +	}
 +	mutex_unlock(&slab_mutex);
 +
 +	return 0;
 +}
 +
-+static int __init slub_tiny_util_init(void)
++static int __init slub_tiny_snapshot_init(void)
 +{
-+	proc_create_single("slub_tiny_util", 0444, NULL,
-+			   slub_tiny_util_show);
++	proc_create_single("slub_tiny_snapshot", 0444, NULL,
++			   slub_tiny_snapshot_show);
 +	return 0;
 +}
-+late_initcall(slub_tiny_util_init);
++late_initcall(slub_tiny_snapshot_init);
 +#endif
  #else
  static inline void slub_tiny_inst_alloc(struct kmem_cache *s, void *object,
