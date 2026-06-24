@@ -1,0 +1,333 @@
+From 14d3ecee7808f75986930352a8cf7e7306daf384 Mon Sep 17 00:00:00 2001
+From: Wilson Zeng <cheng20011202@gmail.com>
+Date: Thu, 11 Jun 2026 17:30:00 +0800
+Subject: [PATCH 6/6] mm/slub: add SLUB_TINY fullest-first partial slab index
+
+---
+ mm/slub.c | 194 ++++++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 182 insertions(+), 12 deletions(-)
+
+diff --git a/mm/slub.c b/mm/slub.c
+index 915e4be..5c45ccd 100644
+--- a/mm/slub.c
++++ b/mm/slub.c
+@@ -427,10 +427,16 @@ struct slub_percpu_sheaves {
+ /*
+  * The slab lists for all objects.
+  */
++#define SLUB_TINY_FULLNESS_BUCKETS	4
++
+ struct kmem_cache_node {
+ 	spinlock_t list_lock;
+ 	unsigned long nr_partial;
+ 	struct list_head partial;
++#ifdef CONFIG_SLUB_TINY
++	struct list_head partial_q[SLUB_TINY_FULLNESS_BUCKETS];
++	unsigned int partial_map;
++#endif
+ #ifdef CONFIG_SLUB_DEBUG
+ 	atomic_long_t nr_slabs;
+ 	atomic_long_t total_objects;
+@@ -444,6 +450,37 @@ static inline struct kmem_cache_node *get_node(struct kmem_cache *s, int node)
+ 	return s->node[node];
+ }
+ 
++#ifdef CONFIG_SLUB_TINY
++static inline unsigned int slub_tiny_fullness(const struct slab *slab)
++{
++	unsigned int b = ((unsigned int)slab->inuse *
++			  SLUB_TINY_FULLNESS_BUCKETS) / slab->objects;
++
++	return min(b, SLUB_TINY_FULLNESS_BUCKETS - 1U);
++}
++
++static inline void slub_tiny_partial_sync_map(struct kmem_cache_node *n)
++{
++	unsigned int b, map = 0;
++
++	for (b = 0; b < SLUB_TINY_FULLNESS_BUCKETS; b++)
++		if (!list_empty(&n->partial_q[b]))
++			map |= 1U << b;
++	n->partial_map = map;
++}
++
++static inline void slub_tiny_partial_rebucket(struct kmem_cache_node *n,
++					      struct slab *slab)
++{
++	list_move(&slab->slab_list, &n->partial_q[slub_tiny_fullness(slab)]);
++	slub_tiny_partial_sync_map(n);
++}
++#else
++static inline void slub_tiny_partial_sync_map(struct kmem_cache_node *n) { }
++static inline void slub_tiny_partial_rebucket(struct kmem_cache_node *n,
++					      struct slab *slab) { }
++#endif
++
+ /*
+  * Get the barn of the current cpu's closest memory node. It may not exist on
+  * systems with memoryless nodes but without CONFIG_HAVE_MEMORYLESS_NODES
+@@ -3635,20 +3672,25 @@ static int slub_tiny_snapshot_show(struct seq_file *m, void *v)
+ 
+ 		frag_scan = 1;
+ 		for_each_kmem_cache_node(s, node, n) {
+-			spin_lock_irqsave(&n->list_lock, flags);
+-			list_for_each_entry(slab, &n->partial, slab_list) {
+-				unsigned int inuse = slab->inuse;
+-				unsigned int slab_free;
++			unsigned int b;
+ 
+-				slab_free = slab->objects - inuse;
+-				partial_free += slab_free;
+-				if (!inuse) {
+-					empty_slabs++;
+-					continue;
++			spin_lock_irqsave(&n->list_lock, flags);
++			for (b = 0; b < SLUB_TINY_FULLNESS_BUCKETS; b++) {
++				list_for_each_entry(slab, &n->partial_q[b],
++						    slab_list) {
++					unsigned int inuse = slab->inuse;
++					unsigned int slab_free;
++
++					slab_free = slab->objects - inuse;
++					partial_free += slab_free;
++					if (!inuse) {
++						empty_slabs++;
++						continue;
++					}
++					partial_slabs++;
++					objects_partial += inuse;
++					free_slots += slab_free;
+ 				}
+-				partial_slabs++;
+-				objects_partial += inuse;
+-				free_slots += slab_free;
+ 			}
+ 			spin_unlock_irqrestore(&n->list_lock, flags);
+ 		}
+@@ -3884,10 +3926,22 @@ static inline void
+ __add_partial(struct kmem_cache_node *n, struct slab *slab, enum add_mode mode)
+ {
+ 	n->nr_partial++;
++#ifdef CONFIG_SLUB_TINY
++	{
++		unsigned int b = slub_tiny_fullness(slab);
++
++		if (mode == ADD_TO_TAIL)
++			list_add_tail(&slab->slab_list, &n->partial_q[b]);
++		else
++			list_add(&slab->slab_list, &n->partial_q[b]);
++		n->partial_map |= 1U << b;
++	}
++#else
+ 	if (mode == ADD_TO_TAIL)
+ 		list_add_tail(&slab->slab_list, &n->partial);
+ 	else
+ 		list_add(&slab->slab_list, &n->partial);
++#endif
+ 	slab_set_node_partial(slab);
+ }
+ 
+@@ -3903,6 +3957,7 @@ static inline void remove_partial(struct kmem_cache_node *n,
+ {
+ 	lockdep_assert_held(&n->list_lock);
+ 	list_del(&slab->slab_list);
++	slub_tiny_partial_sync_map(n);
+ 	slab_clear_node_partial(slab);
+ 	n->nr_partial--;
+ }
+@@ -3941,6 +3996,8 @@ static void *alloc_single_from_partial(struct kmem_cache *s,
+ 	if (slab->inuse == slab->objects) {
+ 		remove_partial(n, slab);
+ 		add_full(s, n, slab);
++	} else if (IS_ENABLED(CONFIG_SLUB_TINY)) {
++		slub_tiny_partial_rebucket(n, slab);
+ 	}
+ 
+ 	return object;
+@@ -4056,6 +4113,44 @@ static bool get_partial_node_bulk(struct kmem_cache *s,
+ /*
+  * Try to allocate object from a partial slab on a specific node.
+  */
++#ifdef CONFIG_SLUB_TINY
++static void *slub_tiny_get_partial_locked(struct kmem_cache *s,
++					  struct kmem_cache_node *n,
++					  struct partial_context *pc)
++{
++	unsigned int map = n->partial_map & (BIT(SLUB_TINY_FULLNESS_BUCKETS) - 1);
++
++	lockdep_assert_held(&n->list_lock);
++
++	while (map) {
++		unsigned int b = fls(map) - 1;
++		struct slab *slab, *slab2;
++
++		list_for_each_entry_safe(slab, slab2, &n->partial_q[b],
++					 slab_list) {
++			void *object;
++
++			if (!pfmemalloc_match(slab, pc->flags))
++				continue;
++
++			object = alloc_single_from_partial(s, n, slab,
++							   pc->orig_size);
++			if (object)
++				return object;
++		}
++		map &= ~BIT(b);
++	}
++	return NULL;
++}
++#else
++static inline void *slub_tiny_get_partial_locked(struct kmem_cache *s,
++						 struct kmem_cache_node *n,
++						 struct partial_context *pc)
++{
++	return NULL;
++}
++#endif
++
+ static void *get_from_partial_node(struct kmem_cache *s,
+ 				   struct kmem_cache_node *n,
+ 				   struct partial_context *pc)
+@@ -4077,6 +4172,12 @@ static void *get_from_partial_node(struct kmem_cache *s,
+ 		spin_lock_irqsave(&n->list_lock, flags);
+ 	else if (!spin_trylock_irqsave(&n->list_lock, flags))
+ 		return NULL;
++
++	if (IS_ENABLED(CONFIG_SLUB_TINY)) {
++		object = slub_tiny_get_partial_locked(s, n, pc);
++		goto out_unlock;
++	}
++
+ 	list_for_each_entry_safe(slab, slab2, &n->partial, slab_list) {
+ 
+ 		struct freelist_counters old, new;
+@@ -4113,6 +4214,7 @@ static void *get_from_partial_node(struct kmem_cache *s,
+ 
+ 		break;
+ 	}
++out_unlock:
+ 	spin_unlock_irqrestore(&n->list_lock, flags);
+ 	return object;
+ }
+@@ -5709,6 +5811,8 @@ static noinline void free_to_partial_list(
+ 		} else if (slab_free) {
+ 			remove_partial(n, slab);
+ 			stat(s, FREE_REMOVE_PARTIAL);
++		} else if (IS_ENABLED(CONFIG_SLUB_TINY)) {
++			slub_tiny_partial_rebucket(n, slab);
+ 		}
+ 	}
+ 
+@@ -7703,6 +7807,15 @@ init_kmem_cache_node(struct kmem_cache_node *n, struct node_barn *barn)
+ 	n->nr_partial = 0;
+ 	spin_lock_init(&n->list_lock);
+ 	INIT_LIST_HEAD(&n->partial);
++#ifdef CONFIG_SLUB_TINY
++	{
++		unsigned int b;
++
++		for (b = 0; b < SLUB_TINY_FULLNESS_BUCKETS; b++)
++			INIT_LIST_HEAD(&n->partial_q[b]);
++		n->partial_map = 0;
++	}
++#endif
+ #ifdef CONFIG_SLUB_DEBUG
+ 	atomic_long_set(&n->nr_slabs, 0);
+ 	atomic_long_set(&n->total_objects, 0);
+@@ -8124,6 +8237,23 @@ static void free_partial(struct kmem_cache *s, struct kmem_cache_node *n)
+ 
+ 	BUG_ON(irqs_disabled());
+ 	spin_lock_irq(&n->list_lock);
++#ifdef CONFIG_SLUB_TINY
++	{
++		unsigned int b;
++
++		for (b = 0; b < SLUB_TINY_FULLNESS_BUCKETS; b++) {
++			list_for_each_entry_safe(slab, h, &n->partial_q[b],
++						 slab_list) {
++				if (!slab->inuse) {
++					remove_partial(n, slab);
++					list_add(&slab->slab_list, &discard);
++				} else {
++					list_slab_objects(s, slab);
++				}
++			}
++		}
++	}
++#else
+ 	list_for_each_entry_safe(slab, h, &n->partial, slab_list) {
+ 		if (!slab->inuse) {
+ 			remove_partial(n, slab);
+@@ -8132,6 +8298,7 @@ static void free_partial(struct kmem_cache *s, struct kmem_cache_node *n)
+ 			list_slab_objects(s, slab);
+ 		}
+ 	}
++#endif
+ 	spin_unlock_irq(&n->list_lock);
+ 
+ 	list_for_each_entry_safe(slab, h, &discard, slab_list)
+@@ -8392,6 +8523,33 @@ static int __kmem_cache_do_shrink(struct kmem_cache *s)
+ 		 * Note that concurrent frees may occur while we hold the
+ 		 * list_lock. slab->inuse here is the upper limit.
+ 		 */
++#ifdef CONFIG_SLUB_TINY
++		{
++			unsigned int b;
++
++			for (b = 0; b < SLUB_TINY_FULLNESS_BUCKETS; b++) {
++				list_for_each_entry_safe(slab, t,
++							 &n->partial_q[b],
++							 slab_list) {
++					int free = slab->objects - slab->inuse;
++
++					barrier();
++
++					BUG_ON(free <= 0);
++
++					if (free == slab->objects) {
++						list_move(&slab->slab_list,
++							  &discard);
++						slab_clear_node_partial(slab);
++						n->nr_partial--;
++						dec_slabs_node(s, node,
++							       slab->objects);
++					}
++				}
++			}
++			slub_tiny_partial_sync_map(n);
++		}
++#else
+ 		list_for_each_entry_safe(slab, t, &n->partial, slab_list) {
+ 			int free = slab->objects - slab->inuse;
+ 
+@@ -8416,6 +8574,7 @@ static int __kmem_cache_do_shrink(struct kmem_cache *s)
+ 		 */
+ 		for (i = SHRINK_PROMOTE_MAX - 1; i >= 0; i--)
+ 			list_splice(promote + i, &n->partial);
++#endif
+ 
+ 		spin_unlock_irqrestore(&n->list_lock, flags);
+ 
+@@ -8550,8 +8709,19 @@ static struct kmem_cache * __init bootstrap(struct kmem_cache *static_cache)
+ 	for_each_kmem_cache_node(s, node, n) {
+ 		struct slab *p;
+ 
++#ifdef CONFIG_SLUB_TINY
++		{
++			unsigned int b;
++
++			for (b = 0; b < SLUB_TINY_FULLNESS_BUCKETS; b++)
++				list_for_each_entry(p, &n->partial_q[b],
++						    slab_list)
++					p->slab_cache = s;
++		}
++#else
+ 		list_for_each_entry(p, &n->partial, slab_list)
+ 			p->slab_cache = s;
++#endif
+ 
+ #ifdef CONFIG_SLUB_DEBUG
+ 		list_for_each_entry(p, &n->full, slab_list)
+-- 
+2.54.0
