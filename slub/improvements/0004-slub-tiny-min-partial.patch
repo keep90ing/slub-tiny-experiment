@@ -11,15 +11,16 @@ diff --git a/mm/slub.c b/mm/slub.c
 index c44e52841..8a63bf87f 100644
 --- a/mm/slub.c
 +++ b/mm/slub.c
-@@ -8820,6 +8820,9 @@ int do_kmem_cache_create(struct kmem_cache *s, const char *name,
+@@ -8741,6 +8741,8 @@ int do_kmem_cache_create(struct kmem_cache *s, const char *name,
  	s->min_partial = min_t(unsigned long, MAX_PARTIAL, ilog2(s->size) / 2);
  	s->min_partial = max_t(unsigned long, MIN_PARTIAL, s->min_partial);
- 
+-
 +	if (IS_ENABLED(CONFIG_SLUB_TINY))
 +		s->min_partial = 2;
 +
  	s->cpu_sheaves = alloc_percpu(struct slub_percpu_sheaves);
  	if (!s->cpu_sheaves) {
  		err = -ENOMEM;
+
 -- 
 2.54.0

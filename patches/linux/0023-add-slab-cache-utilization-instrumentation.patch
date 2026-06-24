@@ -5,9 +5,9 @@ Subject: [PATCH 3/4] mm/slub: add optional utilization snapshot instrumentation
 
 ---
  mm/Kconfig  | 15 +++++++++++++++
- mm/slab.h   | 10 ++++++++++
- mm/slub.c   | 48 ++++++++++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 73 insertions(+)
+ mm/slab.h   |  9 +++++++++
+ mm/slub.c   | 44 ++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 68 insertions(+)
 
 diff --git a/mm/Kconfig b/mm/Kconfig
 --- a/mm/Kconfig
@@ -38,7 +38,7 @@ diff --git a/mm/Kconfig b/mm/Kconfig
 diff --git a/mm/slab.h b/mm/slab.h
 --- a/mm/slab.h
 +++ b/mm/slab.h
-@@ -247,6 +247,16 @@
+@@ -247,6 +247,15 @@
  	struct kmem_cache_stats __percpu *cpu_stats;
  #endif
 
@@ -49,7 +49,6 @@ diff --git a/mm/slab.h b/mm/slab.h
 +	 * order assumption): host tooling prefers these over live_slabs*oo. */
 +	long tracked_capacity_objects;
 +	long tracked_live_slab_pages;
-+	long tracked_tail_padding_bytes;
 +#endif
 +
  	struct kmem_cache_node *node[MAX_NUMNODES];
@@ -79,7 +78,7 @@ diff --git a/mm/slub.c b/mm/slub.c
  }
  
  static inline void slub_tiny_inst_slab_alloc(struct kmem_cache *s,
-@@ -3496,6 +3502,13 @@
+@@ -3496,6 +3502,11 @@
  	slub_tiny_live_pages += pages;
  	if (slub_tiny_live_pages > slub_tiny_peak_live_pages)
  		slub_tiny_peak_live_pages = slub_tiny_live_pages;
@@ -87,13 +86,11 @@ diff --git a/mm/slub.c b/mm/slub.c
 +	s->live_slabs++;
 +	s->tracked_capacity_objects += slab->objects;
 +	s->tracked_live_slab_pages += pages;
-+	s->tracked_tail_padding_bytes +=
-+		(PAGE_SIZE << slab_order(slab)) - slab->objects * s->size;
 +#endif
  }
  
  static inline void slub_tiny_inst_slab_free(struct kmem_cache *s,
-@@ -3503,6 +3512,13 @@
+@@ -3503,6 +3510,11 @@
  {
  	slub_tiny_slab_free++;
  	slub_tiny_live_pages -= 1U << slab_order(slab);
@@ -101,13 +98,11 @@ diff --git a/mm/slub.c b/mm/slub.c
 +	s->live_slabs--;
 +	s->tracked_capacity_objects -= slab->objects;
 +	s->tracked_live_slab_pages -= 1U << slab_order(slab);
-+	s->tracked_tail_padding_bytes -=
-+		(PAGE_SIZE << slab_order(slab)) - slab->objects * s->size;
 +#endif
  }
  
  static void slub_tiny_inst_rebase(void)
-@@ -3590,6 +3602,34 @@
+@@ -3590,6 +3598,34 @@
  }
  late_initcall(slub_tiny_sizes_init);
  #endif
