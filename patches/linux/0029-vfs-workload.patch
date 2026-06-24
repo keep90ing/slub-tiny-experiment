@@ -25,7 +25,7 @@ index 000000000..31f2aacb2
 +#
 +# Usage: sh /realvfs.sh [iterations]
 +
-+N="${1:-200}"
++N="${1:-1000}"
 +MNT=/dev/shm/slubvfs
 +DIR="$MNT/work"
 +HELPER=/slub_vfs

@@ -6,8 +6,8 @@ Subject: [PATCH 2/5] mm: merge burst and churn SLUB_TINY workloads
 ---
  mm/Kconfig         |  12 ++
  mm/Makefile        |   1 +
- mm/slub_wl_churn.c | 285 ++++++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 298 insertions(+)
+ mm/slub_wl_churn.c | 325 ++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 338 insertions(+)
  create mode 100644 mm/slub_wl_churn.c
 
 diff --git a/mm/Kconfig b/mm/Kconfig
@@ -50,26 +50,7 @@ new file mode 100644
 index 000000000..0ee64eede
 --- /dev/null
 +++ b/mm/slub_wl_churn.c
-@@ -0,0 +1,285 @@
-+// SPDX-License-Identifier: GPL-2.0
-+/*
-+ * Combined burst and steady-state fragmentation workload.
-+ *
-+ * Protocol:
-+ *   fill <count> <size>
-+ *   release <stride> <order> [seed]
-+ *   free <permille> <order> [seed]
-+ *   refill
-+ *   churn <rounds> <permille> <order> [seed]
-+ *   drain [order]
-+ *
-+ * order: 0 = LIFO, 1 = FIFO, 2 = deterministic shuffle.
-+ *
-+ * fill/release/drain replaces the old burst driver. fill/free/refill and
-+ * churn exercise transient and steady-state partial-slab fragmentation.
-+ * The two modes share one 2048-entry pointer ring and one u16 victim array,
-+ * about 12 KiB of static state on 32-bit ARM.
-+ */
+@@ -0,0 +1,325 @@
 +#include <linux/init.h>
 +#include <linux/kernel.h>
 +#include <linux/minmax.h>
@@ -90,6 +71,8 @@ index 000000000..0ee64eede
 +	CHURN_RANDOM = 2,
 +};
 +
++static struct kmem_cache *churn_cache;
++static unsigned int churn_cache_size;
 +static void *churn_ring[CHURN_CAP];
 +static u16 churn_victims[CHURN_CAP];
 +static unsigned int churn_live;
@@ -127,7 +110,7 @@ index 000000000..0ee64eede
 +				     churn_victims[count - 1 - i] :
 +				     churn_victims[i];
 +
-+		kfree(churn_ring[index]);
++		kmem_cache_free(churn_cache, churn_ring[index]);
 +		churn_ring[index] = NULL;
 +	}
 +}
@@ -154,17 +137,36 @@ index 000000000..0ee64eede
 +	return count;
 +}
 +
++static int churn_setup_cache(unsigned int size)
++{
++	if (churn_cache && churn_cache_size == size)
++		return 0;
++	if (churn_cache) {
++		kmem_cache_destroy(churn_cache);
++		churn_cache = NULL;
++		churn_cache_size = 0;
++	}
++	churn_cache = kmem_cache_create("slub_wl_churn", size, 0,
++					SLAB_NO_MERGE, NULL);
++	if (!churn_cache)
++		return -ENOMEM;
++	churn_cache_size = size;
++	return 0;
++}
++
 +static unsigned int fill_locked(unsigned int count, unsigned int size)
 +{
 +	unsigned int i;
 +
 +	drain_locked(CHURN_FIFO);
++	if (churn_setup_cache(size))
++		return 0;
 +	churn_state = CHURN_DEFAULT_SEED;
 +	churn_size = size;
 +	count = min_t(unsigned int, count, CHURN_CAP);
 +
 +	for (i = 0; i < count; i++) {
-+		churn_ring[i] = kmalloc(size, GFP_KERNEL);
++		churn_ring[i] = kmem_cache_alloc(churn_cache, GFP_KERNEL);
 +		if (!churn_ring[i])
 +			break;
 +	}
@@ -225,13 +227,13 @@ index 000000000..0ee64eede
 +	unsigned int i;
 +	unsigned int count = 0;
 +
-+	if (!churn_size)
++	if (!churn_size || !churn_cache)
 +		return 0;
 +
 +	for (i = 0; i < CHURN_CAP && churn_live < churn_target; i++) {
 +		if (churn_ring[i])
 +			continue;
-+		churn_ring[i] = kmalloc(churn_size, GFP_KERNEL);
++		churn_ring[i] = kmem_cache_alloc(churn_cache, GFP_KERNEL);
 +		if (!churn_ring[i])
 +			break;
 +		churn_live++;
@@ -252,6 +254,39 @@ index 000000000..0ee64eede
 +		refill_locked();
 +	}
 +	return replaced;
++}
++
++static unsigned int recycle_locked(unsigned int rounds, unsigned int permille)
++{
++	unsigned int round;
++	unsigned int cycled = 0;
++
++	if (!churn_cache || !churn_live)
++		return 0;
++
++	for (round = 0; round < rounds; round++) {
++		unsigned int i;
++		unsigned int index;
++		unsigned int count = churn_live * permille / 1000;
++
++		if (!count)
++			break;
++		for (i = 0; i < count; i++) {
++			index = churn_live - 1 - i;
++			kmem_cache_free(churn_cache, churn_ring[index]);
++			churn_ring[index] = NULL;
++		}
++		churn_live -= count;
++		for (i = 0; i < count; i++) {
++			churn_ring[churn_live] =
++				kmem_cache_alloc(churn_cache, GFP_KERNEL);
++			if (!churn_ring[churn_live])
++				break;
++			churn_live++;
++		}
++		cycled += count;
++	}
++	return cycled;
 +}
 +
 +static ssize_t slub_wl_churn_write(struct file *file,
@@ -309,6 +344,11 @@ index 000000000..0ee64eede
 +		if (parsed >= 5)
 +			churn_state = seed;
 +		churn_locked(a, b, c);
++	} else if (!strcmp(verb, "recycle")) {
++		if (parsed != 3 || !a || a > CHURN_MAX_ROUNDS ||
++		    !b || b > 1000)
++			goto invalid;
++		recycle_locked(a, b);
 +	} else if (!strcmp(verb, "drain")) {
 +		if (parsed >= 2 && a > CHURN_RANDOM)
 +			goto invalid;

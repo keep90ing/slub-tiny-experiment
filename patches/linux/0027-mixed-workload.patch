@@ -6,8 +6,8 @@ Subject: [PATCH 3/5] mm: make mixed-lifetime workload intrusive and bucketed
 ---
  mm/Kconfig           |  12 +++
  mm/Makefile          |   1 +
- mm/slub_wl_mixlife.c | 245 ++++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 258 insertions(+)
+ mm/slub_wl_mixlife.c | 230 ++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 243 insertions(+)
  create mode 100644 mm/slub_wl_mixlife.c
 
 diff --git a/mm/Kconfig b/mm/Kconfig
@@ -50,22 +50,7 @@ new file mode 100644
 index 000000000..de773a1f5
 --- /dev/null
 +++ b/mm/slub_wl_mixlife.c
-@@ -0,0 +1,245 @@
-+// SPDX-License-Identifier: GPL-2.0
-+/*
-+ * Cross-class heavy-tailed lifetime workload.
-+ *
-+ * Protocol:
-+ *   run <steps> [seed]   drain old state, run, retain the final live set
-+ *   step <steps>         continue the current deterministic stream
-+ *   drain                free the resident set
-+ *
-+ * Bookkeeping is stored inside each allocated object. Short-lived objects
-+ * are linked into a 64-bucket expiry wheel, so each step touches only the
-+ * objects that expire at that step rather than scanning the full live set.
-+ * One eighth of allocations are long-lived and remain until eviction or
-+ * drain, creating the sparse survivors needed for fragmentation studies.
-+ */
+@@ -0,0 +1,230 @@
 +#include <linux/init.h>
 +#include <linux/kernel.h>
 +#include <linux/list.h>
@@ -76,7 +61,7 @@ index 000000000..de773a1f5
 +#include <linux/string.h>
 +#include <linux/uaccess.h>
 +
-+#define MIXLIFE_CAP		2048U
++#define MIXLIFE_CAP		4096U
 +#define MIXLIFE_MAX_STEPS	(1U << 20)
 +#define MIXLIFE_WHEEL_SIZE	64U
 +#define MIXLIFE_DEFAULT_SEED	0xA5A5F00DU
@@ -186,7 +171,7 @@ index 000000000..de773a1f5
 +	INIT_HLIST_NODE(&object->expiry);
 +	list_add_tail(&object->all, &mixlife_objects);
 +
-+	if ((lifetime_random >> 16) & 7) {
++	if ((lifetime_random >> 16) & 3) {
 +		unsigned int lifetime = 1 + ((lifetime_random >> 19) %
 +					     MIXLIFE_WHEEL_SIZE);
 +
