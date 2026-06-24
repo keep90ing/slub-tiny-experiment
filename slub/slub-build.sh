@@ -15,12 +15,17 @@
 # applied dynamically here, on top of the extracted tree, and reverted
 # after the build so the tree returns to base-only.
 #
+# Patch integrity policy:
+#   - Every local patch must parse as a valid unified diff.
+#   - Buildroot applies board patches with patch -F0 (no fuzz).
+#   - Dynamic improvement patches use the same no-fuzz rule here.
+# A malformed hunk must fail rather than silently landing at a line number.
+#
 # Usage:
 #   ./slub-build.sh prepare
 #       (re-extract the kernel so base patches 0021..0029 are present)
 #   ./slub-build.sh <variant> <workload> [profile]
-#       variant : baseline order0 nomerge sheafbypass minpartial
-#                 bitmap rec combined
+#       variant : baseline order0 nomerge sheafbypass minpartial bitmap fullness
 #       workload: small churn mixlife oom realvfs
 #       profile : metrics (default, workload-specific instrumentation)
 #                 perf (small only, instrumentation disabled)
@@ -48,16 +53,15 @@ variant_patches() {
 	sheafbypass) echo "0003-slub-tiny-sheaf-bypass" ;;
 	minpartial)  echo "0004-slub-tiny-min-partial" ;;
 	bitmap)      echo "0005-slub-tiny-bitmap-freelist" ;;
-	rec)         echo "0001-slub-tiny-order0 0003-slub-tiny-sheaf-bypass 0004-slub-tiny-min-partial" ;;
-	combined)    echo "0001-slub-tiny-order0 0003-slub-tiny-sheaf-bypass 0004-slub-tiny-min-partial 0005-slub-tiny-bitmap-freelist" ;;
+	fullness)    echo "0006-slub-tiny-fullness-buckets" ;;
 	*) echo "UNKNOWN" ;;
 	esac
 }
 
-# variant -> extra kernel config lines (config flips beyond the patch)
 variant_config() {
 	case "$1" in
 	nomerge) echo "# CONFIG_SLAB_MERGE_DEFAULT is not set" ;;
+	bitmap) echo "CONFIG_SLUB_TINY_FREELIST_BITMAP=y" ;;
 	*) : ;;
 	esac
 }
@@ -73,12 +77,15 @@ workload_config() {
 		echo "# CONFIG_SLUB_TINY_INST_UTIL is not set"
 		echo "# CONFIG_SLUB_TINY_INST_FRAG is not set"
 		case "$workload" in
-		churn|oom|realvfs)
+		small)
+			echo "CONFIG_SLUB_TINY_INST_UTIL=y"
+			;;
+		churn|mixlife|realvfs)
+			echo "CONFIG_SLUB_TINY_INST_SIZES=y"
 			echo "CONFIG_SLUB_TINY_INST_UTIL=y"
 			echo "CONFIG_SLUB_TINY_INST_FRAG=y"
 			;;
-		mixlife)
-			echo "CONFIG_SLUB_TINY_INST_SIZES=y"
+		oom)
 			echo "CONFIG_SLUB_TINY_INST_UTIL=y"
 			echo "CONFIG_SLUB_TINY_INST_FRAG=y"
 			;;
@@ -122,16 +129,65 @@ workload_known() {
 
 base_present() {
 	[ -f "$LINUX_DIR/mm/slub_wl_small.c" ] &&
+	[ -f "$LINUX_DIR/mm/slub_wl_churn.c" ] &&
+	[ -f "$LINUX_DIR/mm/slub_wl_mixlife.c" ] &&
+	[ -f "$LINUX_DIR/mm/slub_wl_oom.c" ] &&
 	[ -f "$LINUX_DIR/tools/testing/selftests/mm/slub_tiny_realvfs.sh" ] &&
-	[ -f "$LINUX_DIR/tools/testing/selftests/mm/slub_tiny_vfs.c" ]
+	[ -f "$LINUX_DIR/tools/testing/selftests/mm/slub_tiny_vfs.c" ] &&
+	grep -Fq "slub_tiny_freq" "$LINUX_DIR/mm/slub.c" &&
+	grep -Fq "SLUB_TINY_INST_SIZES" "$LINUX_DIR/mm/slub.c" &&
+	grep -Fq "SLUB_TINY_INST_UTIL" "$LINUX_DIR/mm/slub.c" &&
+	grep -Fq "SLUB_TINY_INST_FRAG" "$LINUX_DIR/mm/slub.c"
+}
+
+verify_patch_syntax() {
+	local series="$1"
+	local patch
+
+	shift
+	for patch in "$@"; do
+		if [ ! -f "$patch" ]; then
+			echo "[error] missing $series patch: $patch" >&2
+			return 1
+		fi
+		if ! git -C "$ROOT_DIR" apply --numstat "$patch" >/dev/null; then
+			echo "[error] invalid unified diff in $series patch: $patch" >&2
+			return 1
+		fi
+	done
+}
+
+# NOTE: $LINUX_DIR is under buildroot's output/ which the outer repo gitignores.
+# git 2.5x's `git apply --no-index` silently SKIPS patches whose target paths
+# are gitignored (prints "Skipped patch" and exits 0 without touching files), so
+# the whole improvement layer became a no-op and every variant built as baseline.
+# Use plain `patch -F0` instead -- the same no-fuzz tool Buildroot uses for the
+# board patch series -- which is immune to gitignore. stdin is /dev/null so any
+# prompt (e.g. a reversed/ambiguous patch) becomes a hard error instead of a
+# hang or silent skip.
+apply_improvement_patch() {
+	local patch="$1"
+
+	shift
+	patch -d "$LINUX_DIR" -p1 -F0 "$@" -i "$patch" </dev/null
+}
+
+check_improvement_patch() {
+	local patch="$1"
+
+	shift
+	patch -d "$LINUX_DIR" -p1 -F0 --dry-run "$@" -i "$patch" </dev/null
 }
 
 sync_base_patches() {
 	local patch
+	local patches=("$ROOT_DIR"/patches/linux/002[1-9]-*.patch)
+
+	verify_patch_syntax "base" "${patches[@]}"
 
 	rm -f "$BOARD_PATCHES"/0050*.patch
 	rm -f "$BOARD_PATCHES"/002[1-9]-*.patch
-	for patch in "$ROOT_DIR"/patches/linux/002[1-9]-*.patch; do
+	for patch in "${patches[@]}"; do
 		cp "$patch" "$BOARD_PATCHES/"
 	done
 }
@@ -207,14 +263,31 @@ revert_improvements() {
 		local rev=""
 		for p in $(cat "$STAMP"); do rev="$p $rev"; done
 		for p in $rev; do
-			patch -s -d "$LINUX_DIR" -p1 -R < "$IMP/$p.patch" || true
+			if ! apply_improvement_patch "$IMP/$p.patch" -R; then
+				echo "[error] failed to strictly revert improvement: $p" >&2
+				return 1
+			fi
 		done
 		rm -f "$STAMP"
 	fi
 }
 
+revert_patch_list() {
+	local rev=""
+	local p
+
+	for p in "$@"; do rev="$p $rev"; done
+	for p in $rev; do
+		if ! apply_improvement_patch "$IMP/$p.patch" -R; then
+			echo "[error] failed to strictly revert improvement: $p" >&2
+			return 1
+		fi
+	done
+}
+
 cmd_prepare() {
 	echo "[prepare] installing base patches 0021..0029 and re-extracting kernel..."
+	verify_patch_syntax "improvement" "$IMP"/000[1-6]-*.patch
 	sync_base_patches
 	make -C "$BR" linux-dirclean
 	# linux-rebuild re-extracts and applies the split board patch series.
@@ -226,7 +299,10 @@ cmd_prepare() {
 
 cmd_build() {
 	local variant="$1" workload="$2" profile="${3:-metrics}"
-	local pats; pats=$(variant_patches "$variant")
+	local pats out marker p
+	local -a applied=()
+
+	pats=$(variant_patches "$variant")
 	[ "$pats" = UNKNOWN ] && { echo "unknown variant $variant"; exit 1; }
 	workload_known "$workload" ||
 		{ echo "unknown workload $workload"; exit 1; }
@@ -242,11 +318,28 @@ cmd_build() {
 	base_present || { echo "base not present; run './slub-build.sh prepare' first"; exit 1; }
 
 	echo "[build] variant=$variant workload=$workload profile=$profile"
-	revert_improvements
+	revert_improvements || return 1
 	if [ -n "$pats" ]; then
 		for p in $pats; do
+			verify_patch_syntax "improvement" "$IMP/$p.patch" || return 1
+			echo "  check $p"
+			if ! check_improvement_patch "$IMP/$p.patch"; then
+				echo "  [error] $p preflight check failed" >&2
+				revert_patch_list "${applied[@]}" || return 1
+				echo "  [error] build aborted; no image was created" >&2
+				return 1
+			fi
+
 			echo "  apply $p"
-			patch -s -d "$LINUX_DIR" -p1 < "$IMP/$p.patch"
+			if ! apply_improvement_patch "$IMP/$p.patch"; then
+				echo "  [error] $p failed; reverting patches applied by this build" >&2
+				# git apply does not leave a partial file update on failure; only
+				# revert patches that completed in this invocation.
+				revert_patch_list "${applied[@]}" || return 1
+				echo "  [error] build aborted; no image was created" >&2
+				return 1
+			fi
+			applied+=("$p")
 		done
 		echo "$pats" > "$STAMP"
 	fi
@@ -291,6 +384,15 @@ cmd_build() {
 	make -C "$LINUX_DIR" ARCH=arm \
 		CROSS_COMPILE="$BR/output/host/bin/arm-linux-" olddefconfig >/dev/null
 
+	# Mark this invocation before the kernel build. The artifact checks below
+	# reject stale files from an earlier successful build if this one fails to
+	# produce both images.
+	out="$SLUB_DIR/out/${variant}__${workload}__${profile}"
+	mkdir -p "$out"
+	# A failed new build must not leave an old manifest appearing certified.
+	rm -f "$out/applied-patches.txt"
+	marker=$(mktemp "$out/.build-start.XXXXXX")
+
 	# Rebuild the kernel (produces a fresh xipImage). NOTE: buildroot's
 	# linux-rebuild does NOT re-assemble image.bin, so we do it below.
 	make -C "$BR" linux-rebuild -j"$(nproc)"
@@ -303,8 +405,6 @@ cmd_build() {
 	# romfs-with-scripts) for this variant.
 	assemble_image "$IMAGES/image.bin"
 
-	local out="$SLUB_DIR/out/${variant}__${workload}__${profile}"
-	mkdir -p "$out"
 	cp "$IMAGES/xipImage" "$out/" 2>/dev/null || true
 	cp "$IMAGES/image.bin" "$out/" 2>/dev/null || true
 	cp "$cfg" "$out/.config"
@@ -313,11 +413,41 @@ cmd_build() {
 	grep -E "SLUB_TINY_INST|SLUB_WL_|SLAB_MERGE" \
 		"$cfg" | grep -v "^#.*is not set$" > "$out/enabled.txt" || true
 
-	echo "[build] image -> $out/"
-	cat "$out/size.txt" 2>/dev/null || true
+	if ! test -s "$out/xipImage" || ! test -s "$out/image.bin" ||
+	   ! test "$out/xipImage" -nt "$marker" ||
+	   ! test "$out/image.bin" -nt "$marker"; then
+		echo "[error] fresh artifact verification failed; refusing to certify $out" >&2
+		rm -f "$marker"
+		revert_improvements || return 1
+		return 1
+	fi
+	# Certify only after the dynamic patch stack has also reverted cleanly.
+	revert_improvements || { rm -f "$marker"; return 1; }
 
-	# leave the tree base-only for the next build
-	revert_improvements
+	{
+		echo "format=slub-build-artifact-v1"
+		echo "status=complete"
+		echo "variant=$variant"
+		echo "workload=$workload"
+		echo "profile=$profile"
+		echo "base_patch_series=0021..0029"
+		echo "improvement_apply_mode=patch -p1 -F0"
+		if [ "${#applied[@]}" -eq 0 ]; then
+			echo "improvement_patch=(none)"
+		else
+			for p in "${applied[@]}"; do
+				echo "improvement_patch=$p sha256=$(sha256sum "$IMP/$p.patch" | awk '{print $1}')"
+			done
+		fi
+		echo "config_sha256=$(sha256sum "$out/.config" | awk '{print $1}')"
+		echo "xipImage_sha256=$(sha256sum "$out/xipImage" | awk '{print $1}')"
+		echo "image_bin_sha256=$(sha256sum "$out/image.bin" | awk '{print $1}')"
+	} > "$out/applied-patches.txt"
+	rm -f "$marker"
+
+	echo "[build] image -> $out/"
+	echo "[verify] fresh artifacts and patch manifest -> $out/applied-patches.txt"
+	cat "$out/size.txt" 2>/dev/null || true
 }
 
 case "${1:-}" in
