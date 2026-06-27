@@ -25,14 +25,14 @@ churn)
 	sh /measure_slub_phase.sh slub_wl_churn "release 8 2 3735928559" release
 	sh /measure_slub_phase.sh slub_wl_churn "refill" refill
 	sh /measure_slub_phase.sh slub_wl_churn "churn 16 500 2 3735928559" churn
-	sh /measure_slub_phase.sh slub_wl_churn "recycle 200 800" recycle
+	sh /measure_slub_phase.sh slub_wl_churn "recycle 400 800" recycle
 	sh /measure_slub_phase.sh slub_wl_churn "free 500 2 2654435761" release
 	sh /measure_slub_phase.sh slub_wl_churn "refill" refill
 	sh /measure_slub_phase.sh slub_wl_churn "drain 2" drain
 	;;
 mixlife)
 	echo drain > /proc/slub_wl_mixlife
-	sh /run_slub_seed_sweep.sh slub_wl_mixlife "run 80000" 8
+	sh /run_slub_seed_sweep.sh slub_wl_mixlife "run 320000" 8
 	;;
 oom)
 	for size in 64 256 1024; do
@@ -40,10 +40,10 @@ oom)
 	done
 	;;
 realvfs)
-	sh /realvfs.sh "${2:-1000}"
+	sh /realvfs.sh "${2:-1000}" "${3:-1}"
 	;;
 *)
-	echo "usage: sh /run_slub_workload.sh small [rounds]|churn|mixlife|oom|realvfs [iterations]"
+	echo "usage: sh /run_slub_workload.sh small [rounds]|churn|mixlife|oom|realvfs [iterations] [rounds]"
 	exit 2
 	;;
 esac

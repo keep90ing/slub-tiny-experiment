@@ -61,7 +61,7 @@ index 000000000..de773a1f5
 +#include <linux/string.h>
 +#include <linux/uaccess.h>
 +
-+#define MIXLIFE_CAP		4096U
++#define MIXLIFE_CAP		16384U
 +#define MIXLIFE_MAX_STEPS	(1U << 20)
 +#define MIXLIFE_WHEEL_SIZE	64U
 +#define MIXLIFE_DEFAULT_SEED	0xA5A5F00DU

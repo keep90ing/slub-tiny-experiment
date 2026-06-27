@@ -4,9 +4,9 @@ Date: Sun, 14 Jun 2026 17:35:24 +0800
 Subject: [PATCH 5/5] selftests: add real VFS SLUB_TINY workload helpers
 
 ---
- .../testing/selftests/mm/slub_tiny_realvfs.sh | 140 ++++++++
+ .../testing/selftests/mm/slub_tiny_realvfs.sh | 183 ++++++++++
  tools/testing/selftests/mm/slub_tiny_vfs.c    | 380 ++++++++++++++++++
- 2 files changed, 520 insertions(+)
+ 2 files changed, 563 insertions(+)
  create mode 100644 tools/testing/selftests/mm/slub_tiny_realvfs.sh
  create mode 100644 tools/testing/selftests/mm/slub_tiny_vfs.c
 
@@ -15,7 +15,7 @@ new file mode 100644
 index 000000000..31f2aacb2
 --- /dev/null
 +++ b/tools/testing/selftests/mm/slub_tiny_realvfs.sh
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,183 @@
 +#!/bin/sh
 +# Real VFS metadata churn for the STM32F429 image.
 +#
@@ -23,11 +23,12 @@ index 000000000..31f2aacb2
 +# VFS dentry/inode/file churn without depending on SD-card backed ext2
 +# consistency after a crash.
 +#
-+# Usage: sh /realvfs.sh [iterations]
++# Usage: sh /realvfs.sh [iterations] [rounds]
 +
 +N="${1:-1000}"
++ROUNDS="${2:-1}"
 +MNT=/dev/shm/slubvfs
-+DIR="$MNT/work"
++DIR_PREFIX="$MNT/work"
 +HELPER=/slub_vfs
 +
 +metric()
@@ -87,7 +88,7 @@ index 000000000..31f2aacb2
 +
 +cleanup_ramfs()
 +{
-+	rm -rf "$DIR" 2>/dev/null || true
++	rm -rf "$DIR_PREFIX"* 2>/dev/null || true
 +	if is_mounted; then
 +		umount "$MNT" 2>/dev/null || true
 +	fi
@@ -100,19 +101,52 @@ index 000000000..31f2aacb2
 +		umount "$MNT" || exit 1
 +	fi
 +	mount -t ramfs none "$MNT" || exit 1
-+	mkdir -p "$DIR" || exit 1
++	if [ "$ROUNDS" -eq 1 ]; then
++		mkdir -p "$DIR_PREFIX" || exit 1
++	fi
 +}
 +
 +run_vfs_phase()
 +{
 +	phase="$1"
 +	label="$2"
++	root="$3"
 +	control_window "$phase"
 +	reset_peaks
 +	print_freq "workload:$phase:start"
-+	"$HELPER" "$DIR" "$N" "$phase" || exit 1
++	"$HELPER" "$root" "$N" "$phase" || exit 1
 +	print_freq "workload:$phase:end"
-+	snapshot "$label"
++	if [ -n "$label" ]; then
++		snapshot "$label"
++	fi
++}
++
++run_vfs_round()
++{
++	round="$1"
++	root="$DIR_PREFIX"
++	if [ "$ROUNDS" -gt 1 ]; then
++		root="${DIR_PREFIX}_$round"
++		rm -rf "$root" 2>/dev/null || true
++	fi
++
++	echo "########## realvfs round=$round/$ROUNDS dir=$root ##########"
++
++	if [ "$round" -eq "$ROUNDS" ]; then
++		run_vfs_phase create fs_peak "$root"
++		run_vfs_phase lookup fs_lookup "$root"
++		run_vfs_phase sparse fs_sparse "$root"
++		run_vfs_phase refill fs_refill "$root"
++		run_vfs_phase churn fs_churn "$root"
++		run_vfs_phase drain fs_drained "$root"
++	else
++		run_vfs_phase create "" "$root"
++		run_vfs_phase lookup "" "$root"
++		run_vfs_phase sparse "" "$root"
++		run_vfs_phase refill "" "$root"
++		run_vfs_phase churn "" "$root"
++		run_vfs_phase drain "" "$root"
++	fi
 +}
 +
 +case "$N" in
@@ -123,6 +157,16 @@ index 000000000..31f2aacb2
 +esac
 +if [ "$N" -le 0 ]; then
 +	echo "iterations must be positive"
++	exit 2
++fi
++case "$ROUNDS" in
++	''|*[!0-9]*)
++		echo "rounds must be a positive integer"
++		exit 2
++		;;
++esac
++if [ "$ROUNDS" -le 0 ]; then
++	echo "rounds must be positive"
 +	exit 2
 +fi
 +if [ ! -x "$HELPER" ]; then
@@ -145,15 +189,14 @@ index 000000000..31f2aacb2
 +trap cleanup_ramfs EXIT INT TERM
 +setup_ramfs
 +
-+echo "########## realvfs: iterations=$N fs=ramfs dir=$DIR ##########"
++echo "########## realvfs: iterations=$N rounds=$ROUNDS fs=ramfs dir_prefix=$DIR_PREFIX ##########"
 +snapshot before
 +
-+run_vfs_phase create fs_peak
-+run_vfs_phase lookup fs_lookup
-+run_vfs_phase sparse fs_sparse
-+run_vfs_phase refill fs_refill
-+run_vfs_phase churn fs_churn
-+run_vfs_phase drain fs_drained
++i=1
++while [ "$i" -le "$ROUNDS" ]; do
++	run_vfs_round "$i"
++	i=$((i + 1))
++done
 +
 +echo "########## realvfs done ##########"
 diff --git a/tools/testing/selftests/mm/slub_tiny_vfs.c b/tools/testing/selftests/mm/slub_tiny_vfs.c
