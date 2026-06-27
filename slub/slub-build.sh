@@ -61,7 +61,8 @@ variant_patches() {
 variant_config() {
 	case "$1" in
 	nomerge) echo "# CONFIG_SLAB_MERGE_DEFAULT is not set" ;;
-	bitmap) echo "CONFIG_SLUB_TINY_FREELIST_BITMAP=y" ;;
+	# bitmap: gated directly on CONFIG_SLUB_TINY (always y here); applying the
+	# 0005 patch is sufficient, no extra Kconfig symbol needed.
 	*) : ;;
 	esac
 }

@@ -1,47 +1,12 @@
 From 47377ff80526f7b1c47b5316585ef614c16bb480 Mon Sep 17 00:00:00 2001
 From: Wilson Zeng <cheng20011202@gmail.com>
 Date: Tue, 16 Jun 2026 21:50:01 +0800
-Subject: [PATCH 5/6] mm/slub: add opt-in SLUB_TINY bitmap freelist
+Subject: [PATCH 5/6] mm/slub: replace SLUB_TINY pointer freelist with a bitmap
 
 ---
- mm/Kconfig |  23 +++++++
- mm/slub.c  | 187 +++++++++++++++++++++++++++++++++++++++++++++++++----
- 2 files changed, 198 insertions(+), 12 deletions(-)
+ mm/slub.c | 187 +++++++++++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 175 insertions(+), 12 deletions(-)
 
-diff --git a/mm/Kconfig b/mm/Kconfig
-index fe72a7c74bdc5aeff373f37d92621a8d628edd42..57ad93387e1c1a1b4546339c5612accfff9dfc48 100644
---- a/mm/Kconfig
-+++ b/mm/Kconfig
-@@ -186,6 +186,29 @@ config SLUB_TINY
- 
- 	   If unsure, say N.
- 
-+config SLUB_TINY_FREELIST_BITMAP
-+	bool "SLUB_TINY out-of-object bitmap freelist"
-+	depends on SLUB_TINY
-+	default n
-+	help
-+	  Track the free slots of SLUB_TINY slabs in a per-slab bitmap held
-+	  outside the objects (inline in the slab memmap for small slabs, at
-+	  the slab page end otherwise) instead of a freepointer chain threaded
-+	  through the free objects. Without this option SLUB_TINY keeps its
-+	  default pointer freelist.
-+
-+	  This keeps the allocator's persistent free-slot state outside free
-+	  object slots. A stale access to a free object therefore cannot directly
-+	  read or redirect its persistent freelist link. It does not sanitize
-+	  freed object contents, validate double frees, randomize allocation
-+	  order, or protect the bitmap from arbitrary out-of-bounds writes.
-+
-+	  Cost is a per-slab bitmap: a small allocator hot-path slowdown and,
-+	  for caches packing more than BITS_PER_LONG objects per slab (e.g.
-+	  kmalloc-32/64), potentially one fewer object per slab.
-+
-+	  If unsure, say N.
-+
- config SLUB_TINY_INSTRUMENTATION
- 	bool "SLUB_TINY frequency instrumentation"
- 	depends on SLUB_TINY && PROC_FS
 diff --git a/mm/slub.c b/mm/slub.c
 index 915e4be0c608cbecbc6531b826ec5bf28a1205ff..b2889e6a723e95024b3324d8e6a0dfb3d24673f0 100644
 --- a/mm/slub.c
@@ -50,7 +15,7 @@ index 915e4be0c608cbecbc6531b826ec5bf28a1205ff..b2889e6a723e95024b3324d8e6a0dfb3
  		__p < (__addr) + (__objects) * (__s)->size; \
  		__p += (__s)->size)
  
-+#ifdef CONFIG_SLUB_TINY_FREELIST_BITMAP
++#ifdef CONFIG_SLUB_TINY
 +static inline unsigned int slub_tiny_bitmap_words(unsigned int objects)
 +{
 +	return DIV_ROUND_UP(objects, BITS_PER_LONG);
@@ -157,7 +122,7 @@ index 915e4be0c608cbecbc6531b826ec5bf28a1205ff..b2889e6a723e95024b3324d8e6a0dfb3
 +	unsigned int slab_bytes = (unsigned int)PAGE_SIZE << order;
 +	unsigned int objects = slab_bytes / size;
 +
-+	if (IS_ENABLED(CONFIG_SLUB_TINY_FREELIST_BITMAP)) {
++	if (IS_ENABLED(CONFIG_SLUB_TINY)) {
 +		while (objects > BITS_PER_LONG &&
 +		       objects * size + slub_tiny_bitmap_bytes(objects) >
 +		       slab_bytes)
@@ -172,7 +137,7 @@ index 915e4be0c608cbecbc6531b826ec5bf28a1205ff..b2889e6a723e95024b3324d8e6a0dfb3
  	shuffle = shuffle_freelist(s, slab, allow_spin);
  
 -	if (!shuffle) {
-+	if (IS_ENABLED(CONFIG_SLUB_TINY_FREELIST_BITMAP)) {
++	if (IS_ENABLED(CONFIG_SLUB_TINY)) {
 +		slab->freelist = NULL;
 +		if (slab->objects > BITS_PER_LONG) {
 +			unsigned long *map = slab_bitmap(s, slab);
@@ -200,7 +165,7 @@ index 915e4be0c608cbecbc6531b826ec5bf28a1205ff..b2889e6a723e95024b3324d8e6a0dfb3
  
 -	object = slab->freelist;
 -	slab->freelist = get_freepointer(s, object);
-+	if (IS_ENABLED(CONFIG_SLUB_TINY_FREELIST_BITMAP)) {
++	if (IS_ENABLED(CONFIG_SLUB_TINY)) {
 +		object = slub_tiny_bitmap_alloc(s, slab);
 +		if (unlikely(!object))
 +			return NULL;
@@ -217,7 +182,7 @@ index 915e4be0c608cbecbc6531b826ec5bf28a1205ff..b2889e6a723e95024b3324d8e6a0dfb3
  
 -	object = slab->freelist;
 -	slab->freelist = get_freepointer(s, object);
-+	if (IS_ENABLED(CONFIG_SLUB_TINY_FREELIST_BITMAP)) {
++	if (IS_ENABLED(CONFIG_SLUB_TINY)) {
 +		object = slub_tiny_bitmap_alloc(s, slab);
 +		if (unlikely(!object)) {
 +			if (!allow_spin)
@@ -239,7 +204,7 @@ index 915e4be0c608cbecbc6531b826ec5bf28a1205ff..b2889e6a723e95024b3324d8e6a0dfb3
 +		bool was_full;
  
  		/* Perform the actual freeing while we still hold the locks */
-+		if (IS_ENABLED(CONFIG_SLUB_TINY_FREELIST_BITMAP)) {
++		if (IS_ENABLED(CONFIG_SLUB_TINY)) {
 +			void *object = head;
 +
 +			was_full = (slab->inuse == slab->objects);
@@ -276,7 +241,7 @@ index 915e4be0c608cbecbc6531b826ec5bf28a1205ff..b2889e6a723e95024b3324d8e6a0dfb3
  	}
  
 -	n = slab->freelist;
-+	if (IS_ENABLED(CONFIG_SLUB_TINY_FREELIST_BITMAP)) {
++	if (IS_ENABLED(CONFIG_SLUB_TINY)) {
 +		n = slub_tiny_bitmap_alloc(kmem_cache_node, slab);
 +	} else {
 +		n = slab->freelist;
@@ -287,7 +252,7 @@ index 915e4be0c608cbecbc6531b826ec5bf28a1205ff..b2889e6a723e95024b3324d8e6a0dfb3
  #endif
  	n = kasan_slab_alloc(kmem_cache_node, n, GFP_KERNEL, false);
 -	slab->freelist = get_freepointer(kmem_cache_node, n);
-+	if (!IS_ENABLED(CONFIG_SLUB_TINY_FREELIST_BITMAP))
++	if (!IS_ENABLED(CONFIG_SLUB_TINY))
 +		slab->freelist = get_freepointer(kmem_cache_node, n);
  	slab->inuse = 1;
  	kmem_cache_node->node[node] = n;
