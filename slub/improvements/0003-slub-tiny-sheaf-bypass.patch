@@ -3,14 +3,46 @@ From: Wilson Zeng <cheng20011202@gmail.com>
 Date: Tue, 16 Jun 2026 21:49:57 +0800
 Subject: [PATCH 3/6] mm/slub: bypass per-CPU sheaves for SLUB_TINY
 
----
- mm/slub.c | 27 ++++++++++++++++++++-------
- 1 file changed, 20 insertions(+), 7 deletions(-)
+SLUB_TINY forces sheaf_capacity to 0, so the per-CPU "sheaves" cache can
+never hold an object, yet every kmalloc/kfree still walks into the pcs
+fast path and pays a this_cpu deref + local_trylock round-trip before
+bailing.  On a cacheless UP Cortex-M with external SDRAM each of those is
+a wait-stated access on every alloc/free.
 
-diff --git a/mm/slub.c b/mm/slub.c
+Eliminate the dead layer in three steps, all keyed off the compile-time
+constant CONFIG_SLUB_TINY so the unreachable code is constant-folded and
+garbage-collected from .text:
+
+ 1. Hot path: early-return from alloc_from_pcs() / free_to_pcs() /
+    __kfree_rcu_sheaf() so the per-CPU fast path is skipped entirely.
+
+ 2. Metadata: do not alloc_percpu(cpu_sheaves) / init_percpu_sheaves()
+    in kmem_cache_open(); under TINY s->cpu_sheaves stays NULL.  Every
+    remaining deref is guarded by cache_has_sheaves() (compile-time
+    false under TINY) except __kfree_rcu_sheaf(), covered by step 1.
+
+ 3. Public sheaf API: kmem_cache_prefill/return/refill_sheaf() are NOT
+    dead under TINY -- lib/maple_tree.c calls them unconditionally and
+    relies on them still working.  Because s->sheaf_capacity is a runtime
+    field, the compiler cannot prove the per-CPU/barn branches inside
+    these functions are unreachable, so ~2 KB of barn/pcs code (notably
+    refill_sheaf, ~0.9 KB) survives in .text -- and GCC-LTO keeps these
+    external-linkage helpers too.  Steer each entry point through its
+    oversize/non-sheaf branch with IS_ENABLED(CONFIG_SLUB_TINY) so the
+    barn/pcs code folds away while maple_tree keeps getting a working
+    (oversize) sheaf from the normal slab path.
+
+The struct slab_sheaf object and the oversize alloc/free path are kept:
+they are a hard requirement of maple_tree under TINY and cannot be
+removed without converting maple_tree back to a non-sheaf allocator.
+
+---
+ mm/slub.c | 51 +++++++++++++++++++++++++++++++++++++--------------
+ 1 file changed, 41 insertions(+), 10 deletions(-)
+
 --- a/mm/slub.c
 +++ b/mm/slub.c
-@@ -4988,6 +4988,9 @@
+@@ -4937,6 +4937,9 @@
  	bool node_requested;
  	void *object;
  
@@ -20,7 +52,52 @@ diff --git a/mm/slub.c b/mm/slub.c
  #ifdef CONFIG_NUMA
  	if (static_branch_unlikely(&strict_numa) &&
  			 node == NUMA_NO_NODE) {
-@@ -6080,6 +6083,9 @@
+@@ -5231,7 +5234,13 @@
+ 	if (unlikely(!size))
+ 		return NULL;
+ 
+-	if (unlikely(size > s->sheaf_capacity)) {
++	/*
++	 * SLUB_TINY forces sheaf_capacity to 0, so the oversize branch below is
++	 * the only one ever taken. Force it at compile time so the per-CPU and
++	 * barn fast path that follows is unreachable and folds away under TINY.
++	 */
++	if (IS_ENABLED(CONFIG_SLUB_TINY) ||
++	    unlikely(size > s->sheaf_capacity)) {
+ 
+ 		sheaf = kzalloc_flex(*sheaf, objects, size, gfp);
+ 		if (!sheaf)
+@@ -5312,7 +5321,13 @@
+ 	struct slub_percpu_sheaves *pcs;
+ 	struct node_barn *barn;
+ 
+-	if (unlikely((sheaf->capacity != s->sheaf_capacity)
++	/*
++	 * Under SLUB_TINY every sheaf is oversize (sheaf_capacity == 0) and is
++	 * always flushed and freed directly here; the per-CPU spare / barn
++	 * return path below can never run, so gate it out to let it fold away.
++	 */
++	if (IS_ENABLED(CONFIG_SLUB_TINY) ||
++	    unlikely((sheaf->capacity != s->sheaf_capacity)
+ 		     || sheaf->pfmemalloc)) {
+ 		sheaf_flush_unused(s, sheaf);
+ 		kfree(sheaf);
+@@ -5378,7 +5393,13 @@
+ 		return 0;
+ 
+ 	if (likely(sheaf->capacity >= size)) {
+-		if (likely(sheaf->capacity == s->sheaf_capacity))
++		/*
++		 * TINY sheaves are always oversize, so this branch never runs;
++		 * gate it out so __prefill_sheaf_pfmemalloc() -- and the per-CPU
++		 * refill_sheaf() it pulls in -- can be dropped under TINY.
++		 */
++		if (!IS_ENABLED(CONFIG_SLUB_TINY) &&
++		    likely(sheaf->capacity == s->sheaf_capacity))
+ 			return __prefill_sheaf_pfmemalloc(s, sheaf, gfp);
+ 
+ 		if (!__kmem_cache_alloc_bulk(s, gfp, sheaf->capacity - sheaf->size,
+@@ -6029,6 +6050,9 @@
  {
  	struct slub_percpu_sheaves *pcs;
  
@@ -30,7 +107,7 @@ diff --git a/mm/slub.c b/mm/slub.c
  	if (!local_trylock(&s->cpu_sheaves->lock))
  		return false;
  
-@@ -6179,6 +6185,9 @@
+@@ -6128,6 +6152,9 @@
  	struct slub_percpu_sheaves *pcs;
  	struct slab_sheaf *rcu_sheaf;
  
@@ -40,7 +117,7 @@ diff --git a/mm/slub.c b/mm/slub.c
  	if (WARN_ON_ONCE(IS_ENABLED(CONFIG_PREEMPT_RT)))
  		return false;
  
-@@ -8792,10 +8806,12 @@
+@@ -8741,10 +8768,12 @@
  	s->min_partial = min_t(unsigned long, MAX_PARTIAL, ilog2(s->size) / 2);
  	s->min_partial = max_t(unsigned long, MIN_PARTIAL, s->min_partial);
  
@@ -57,7 +134,7 @@ diff --git a/mm/slub.c b/mm/slub.c
  	}
  
  #ifdef CONFIG_NUMA
-@@ -8816,9 +8838,11 @@
+@@ -8765,9 +8794,11 @@
  		goto out;
  #endif
  
@@ -74,3 +151,4 @@ diff --git a/mm/slub.c b/mm/slub.c
  
 -- 
 2.54.0
+
