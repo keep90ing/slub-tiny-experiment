@@ -6,8 +6,8 @@
 # + romfs with the measurement scripts at /), so this just writes it.
 #
 # Usage:
-#   ./slub-flash.sh out/rec__mixlife__metrics/image.bin
-#   ./slub-flash.sh rec mixlife metrics    # shorthand for the above
+#   ./slub-flash.sh out/baseline__mixlife__metrics/image.bin
+#   ./slub-flash.sh baseline mixlife metrics    # shorthand for the above
 set -euo pipefail
 
 SLUB_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
