@@ -1,18 +1,16 @@
-From 70703545b41780e12e8ab29f92e2d6553e46fffe Mon Sep 17 00:00:00 2001
+From c1695317061cf99951b136f2b55d69f17d9cf5b7 Mon Sep 17 00:00:00 2001
 From: Wilson Zeng <cheng20011202@gmail.com>
 Date: Sun, 14 Jun 2026 17:35:24 +0800
 Subject: [PATCH 5/5] selftests: add real VFS SLUB_TINY workload helpers
 
 ---
- .../testing/selftests/mm/slub_tiny_realvfs.sh | 183 ++++++++++
- tools/testing/selftests/mm/slub_tiny_vfs.c    | 380 ++++++++++++++++++
+ tools/testing/selftests/mm/slub_tiny_realvfs.sh | 183 +++++++++++++++++++++
+ tools/testing/selftests/mm/slub_tiny_vfs.c      | 380 ++++++++++++++++++++++++++++++++++++++++++++
  2 files changed, 563 insertions(+)
- create mode 100644 tools/testing/selftests/mm/slub_tiny_realvfs.sh
- create mode 100644 tools/testing/selftests/mm/slub_tiny_vfs.c
 
 diff --git a/tools/testing/selftests/mm/slub_tiny_realvfs.sh b/tools/testing/selftests/mm/slub_tiny_realvfs.sh
 new file mode 100644
-index 000000000..31f2aacb2
+index 0000000..387ab79
 --- /dev/null
 +++ b/tools/testing/selftests/mm/slub_tiny_realvfs.sh
 @@ -0,0 +1,183 @@
@@ -201,7 +199,7 @@ index 000000000..31f2aacb2
 +echo "########## realvfs done ##########"
 diff --git a/tools/testing/selftests/mm/slub_tiny_vfs.c b/tools/testing/selftests/mm/slub_tiny_vfs.c
 new file mode 100644
-index 000000000..ceaeb129c
+index 0000000..17c87ae
 --- /dev/null
 +++ b/tools/testing/selftests/mm/slub_tiny_vfs.c
 @@ -0,0 +1,380 @@

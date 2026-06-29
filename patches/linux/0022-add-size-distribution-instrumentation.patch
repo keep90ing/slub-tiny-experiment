@@ -1,17 +1,18 @@
-From b7b8bcc604108dc4389bbf3f9cef42d0c9b8dd29 Mon Sep 17 00:00:00 2001
+From aaf2592154752c6215034726d7b02c4778a70278 Mon Sep 17 00:00:00 2001
 From: Wilson Zeng <cheng20011202@gmail.com>
 Date: Sun, 14 Jun 2026 17:31:27 +0800
-Subject: [PATCH 2/4] mm/slub: add optional size instrumentation
+Subject: [PATCH 2/4] mm/slub: add optional size-class distribution instrumentation
 
 ---
- mm/Kconfig  | 15 +++++++++++++++
- mm/slub.c   | 64 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ mm/Kconfig | 15 +++++++++++++++
+ mm/slub.c  | 64 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
  2 files changed, 79 insertions(+)
 
 diff --git a/mm/Kconfig b/mm/Kconfig
+index cd30a80..5af8248 100644
 --- a/mm/Kconfig
 +++ b/mm/Kconfig
-@@ -219,6 +219,21 @@
+@@ -219,6 +219,21 @@ config SLAB_MERGE_DEFAULT
  	  merging at runtime, "slab_nomerge" can be passed on the kernel
  	  command line.
  
@@ -33,11 +34,11 @@ diff --git a/mm/Kconfig b/mm/Kconfig
  config SLAB_FREELIST_RANDOM
  	bool "Randomize slab freelist"
  	depends on !SLUB_TINY
-
 diff --git a/mm/slub.c b/mm/slub.c
+index b2e640b..5455a92 100644
 --- a/mm/slub.c
 +++ b/mm/slub.c
-@@ -3434,11 +3434,51 @@
+@@ -3434,11 +3434,51 @@ static unsigned int slub_tiny_slab_free;
  static unsigned int slub_tiny_live_pages;
  static unsigned int slub_tiny_peak_live_pages;
  
@@ -89,7 +90,7 @@ diff --git a/mm/slub.c b/mm/slub.c
  	}
  }
  
-@@ -3523,6 +3563,30 @@
+@@ -3523,6 +3563,30 @@ static int __init slub_tiny_freq_init(void)
  	return 0;
  }
  late_initcall(slub_tiny_freq_init);

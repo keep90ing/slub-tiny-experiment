@@ -1,17 +1,16 @@
-From b3e57e942c4df1572eddae168cb34a9b03b69875 Mon Sep 17 00:00:00 2001
+From 8abc75c0caa3a1a2a99794f062cf011a48eed6a1 Mon Sep 17 00:00:00 2001
 From: Wilson Zeng <cheng20011202@gmail.com>
 Date: Sun, 14 Jun 2026 17:35:21 +0800
-Subject: [PATCH 2/5] mm: merge burst and churn SLUB_TINY workloads
+Subject: [PATCH 2/5] mm: add burst-and-churn SLUB_TINY workload
 
 ---
- mm/Kconfig         |  12 ++
+ mm/Kconfig         |  12 +++
  mm/Makefile        |   1 +
- mm/slub_wl_churn.c | 325 ++++++++++++++++++++++++++++++++++++++++
+ mm/slub_wl_churn.c | 325 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
  3 files changed, 338 insertions(+)
- create mode 100644 mm/slub_wl_churn.c
 
 diff --git a/mm/Kconfig b/mm/Kconfig
-index adafeb1c7..365bed0b2 100644
+index afc3acd..0596a83 100644
 --- a/mm/Kconfig
 +++ b/mm/Kconfig
 @@ -220,6 +220,18 @@ config SLUB_WL_SMALL
@@ -34,7 +33,7 @@ index adafeb1c7..365bed0b2 100644
  	bool "Allow slab caches to be merged"
  	default y
 diff --git a/mm/Makefile b/mm/Makefile
-index 3c6663ef3..44e964918 100644
+index 3c6663e..44e9649 100644
 --- a/mm/Makefile
 +++ b/mm/Makefile
 @@ -71,6 +71,7 @@ obj-y += memblock.o
@@ -47,7 +46,7 @@ index 3c6663ef3..44e964918 100644
  	obj-$(CONFIG_ADVISE_SYSCALLS)	+= madvise.o
 diff --git a/mm/slub_wl_churn.c b/mm/slub_wl_churn.c
 new file mode 100644
-index 000000000..0ee64eede
+index 0000000..2efd0fd
 --- /dev/null
 +++ b/mm/slub_wl_churn.c
 @@ -0,0 +1,325 @@

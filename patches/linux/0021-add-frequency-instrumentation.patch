@@ -1,17 +1,18 @@
-From fece87f57ce8c386cdf651adf69b592cc6155402 Mon Sep 17 00:00:00 2001
+From f0dc71cc7bb16a3c3aa18d7272188669ceedee4e Mon Sep 17 00:00:00 2001
 From: Wilson Zeng <cheng20011202@gmail.com>
 Date: Sun, 14 Jun 2026 17:31:25 +0800
 Subject: [PATCH 1/4] mm/slub: add lightweight SLUB_TINY frequency core
 
 ---
- mm/Kconfig  | 19 +++++++++++++++++++
- mm/slub.c   | 115 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ mm/Kconfig |  19 ++++++++++++++
+ mm/slub.c  | 115 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
  2 files changed, 134 insertions(+)
 
 diff --git a/mm/Kconfig b/mm/Kconfig
+index ebd8ea3..cd30a80 100644
 --- a/mm/Kconfig
 +++ b/mm/Kconfig
-@@ -186,6 +186,25 @@
+@@ -186,6 +186,25 @@ config SLUB_TINY
  
  	   If unsure, say N.
  
@@ -37,11 +38,11 @@ diff --git a/mm/Kconfig b/mm/Kconfig
  config SLAB_MERGE_DEFAULT
  	bool "Allow slab caches to be merged"
  	default y
-
 diff --git a/mm/slub.c b/mm/slub.c
+index 2b2d33c..b2e640b 100644
 --- a/mm/slub.c
 +++ b/mm/slub.c
-@@ -3426,6 +3426,113 @@
+@@ -3426,6 +3426,113 @@ static inline bool shuffle_freelist(struct kmem_cache *s, struct slab *slab,
  }
  #endif /* CONFIG_SLAB_FREELIST_RANDOM */
  
@@ -155,7 +156,7 @@ diff --git a/mm/slub.c b/mm/slub.c
  static __always_inline void account_slab(struct slab *slab, int order,
  					 struct kmem_cache *s, gfp_t gfp)
  {
-@@ -3526,6 +3633,8 @@
+@@ -3526,6 +3633,8 @@ static struct slab *allocate_slab(struct kmem_cache *s, gfp_t flags, int node)
  		set_freepointer(s, p, NULL);
  	}
  
@@ -164,7 +165,7 @@ diff --git a/mm/slub.c b/mm/slub.c
  	return slab;
  }
  
-@@ -3546,6 +3655,8 @@
+@@ -3546,6 +3655,8 @@ static void __free_slab(struct kmem_cache *s, struct slab *slab, bool allow_spin
  	int order = compound_order(page);
  	int pages = 1 << order;
  
@@ -173,7 +174,7 @@ diff --git a/mm/slub.c b/mm/slub.c
  	__slab_clear_pfmemalloc(slab);
  	page->mapping = NULL;
  	__ClearPageSlab(page);
-@@ -4865,6 +4976,8 @@
+@@ -4865,6 +4976,8 @@ static __fastpath_inline void *slab_alloc_node(struct kmem_cache *s, struct list
  	 */
  	slab_post_alloc_hook(s, lru, gfpflags, 1, &object, init, orig_size);
  
@@ -182,7 +183,7 @@ diff --git a/mm/slub.c b/mm/slub.c
  	return object;
  }
  
-@@ -6159,6 +6272,8 @@
+@@ -6159,6 +6272,8 @@ static __fastpath_inline
  void slab_free(struct kmem_cache *s, struct slab *slab, void *object,
  	       unsigned long addr)
  {

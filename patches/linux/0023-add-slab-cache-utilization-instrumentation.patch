@@ -1,18 +1,19 @@
-From 1561c38beca8a1816d01b5bd34f2bc1046ff2eca Mon Sep 17 00:00:00 2001
+From 1b6280c57a6a49cba28ab2927bbc656026f7360f Mon Sep 17 00:00:00 2001
 From: Wilson Zeng <cheng20011202@gmail.com>
 Date: Sun, 14 Jun 2026 17:31:28 +0800
 Subject: [PATCH 3/4] mm/slub: add optional utilization snapshot instrumentation
 
 ---
- mm/Kconfig  | 15 +++++++++++++++
- mm/slab.h   |  9 +++++++++
- mm/slub.c   | 44 ++++++++++++++++++++++++++++++++++++++++++++
+ mm/Kconfig | 15 +++++++++++++++
+ mm/slab.h  |  9 +++++++++
+ mm/slub.c  | 44 ++++++++++++++++++++++++++++++++++++++++++++
  3 files changed, 68 insertions(+)
 
 diff --git a/mm/Kconfig b/mm/Kconfig
+index 5af8248..0266e35 100644
 --- a/mm/Kconfig
 +++ b/mm/Kconfig
-@@ -234,6 +234,21 @@
+@@ -234,6 +234,21 @@ config SLUB_TINY_INST_SIZES
  
  	  If unsure, say N.
  
@@ -34,14 +35,14 @@ diff --git a/mm/Kconfig b/mm/Kconfig
  config SLAB_FREELIST_RANDOM
  	bool "Randomize slab freelist"
  	depends on !SLUB_TINY
-
 diff --git a/mm/slab.h b/mm/slab.h
+index e9ab292..9b1ad94 100644
 --- a/mm/slab.h
 +++ b/mm/slab.h
-@@ -247,6 +247,15 @@
+@@ -247,6 +247,15 @@ struct kmem_cache {
  	struct kmem_cache_stats __percpu *cpu_stats;
  #endif
-
+ 
 +#ifdef CONFIG_SLUB_TINY_INST_UTIL
 +	int live_objects;
 +	int live_slabs;
@@ -54,11 +55,11 @@ diff --git a/mm/slab.h b/mm/slab.h
  	struct kmem_cache_node *node[MAX_NUMNODES];
  };
  
-
 diff --git a/mm/slub.c b/mm/slub.c
+index 5455a92..c1abcfe 100644
 --- a/mm/slub.c
 +++ b/mm/slub.c
-@@ -3474,6 +3474,9 @@
+@@ -3474,6 +3474,9 @@ static inline void slub_tiny_inst_alloc(struct kmem_cache *s, void *object,
  #endif
  
  		slub_tiny_alloc++;
@@ -68,7 +69,7 @@ diff --git a/mm/slub.c b/mm/slub.c
  #ifdef CONFIG_SLUB_TINY_INST_SIZES
  		slub_tiny_sz[bucket]++;
  		slub_tiny_sz_req[bucket] += req;
-@@ -3485,6 +3488,9 @@
+@@ -3485,6 +3488,9 @@ static inline void slub_tiny_inst_alloc(struct kmem_cache *s, void *object,
  static inline void slub_tiny_inst_free(struct kmem_cache *s)
  {
  	slub_tiny_free++;
@@ -78,7 +79,7 @@ diff --git a/mm/slub.c b/mm/slub.c
  }
  
  static inline void slub_tiny_inst_slab_alloc(struct kmem_cache *s,
-@@ -3496,6 +3502,11 @@
+@@ -3496,6 +3502,11 @@ static inline void slub_tiny_inst_slab_alloc(struct kmem_cache *s,
  	slub_tiny_live_pages += pages;
  	if (slub_tiny_live_pages > slub_tiny_peak_live_pages)
  		slub_tiny_peak_live_pages = slub_tiny_live_pages;
@@ -90,7 +91,7 @@ diff --git a/mm/slub.c b/mm/slub.c
  }
  
  static inline void slub_tiny_inst_slab_free(struct kmem_cache *s,
-@@ -3503,6 +3510,11 @@
+@@ -3503,6 +3514,11 @@ static inline void slub_tiny_inst_slab_free(struct kmem_cache *s,
  {
  	slub_tiny_slab_free++;
  	slub_tiny_live_pages -= 1U << slab_order(slab);
@@ -102,7 +103,7 @@ diff --git a/mm/slub.c b/mm/slub.c
  }
  
  static void slub_tiny_inst_rebase(void)
-@@ -3590,6 +3598,34 @@
+@@ -3587,6 +3603,34 @@ static int __init slub_tiny_sizes_init(void)
  }
  late_initcall(slub_tiny_sizes_init);
  #endif

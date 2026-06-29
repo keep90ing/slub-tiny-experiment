@@ -1,17 +1,16 @@
-From 3689622782ebae0b2d3f7e307883cca622801697 Mon Sep 17 00:00:00 2001
+From cb820404387e0e1f7579b14cc8e0b2dde30aaaa6 Mon Sep 17 00:00:00 2001
 From: Wilson Zeng <cheng20011202@gmail.com>
 Date: Sun, 14 Jun 2026 17:35:20 +0800
 Subject: [PATCH 1/5] mm: add minimal small-pair SLUB_TINY workload
 
 ---
- mm/Kconfig         | 15 +++++++++
+ mm/Kconfig         | 15 +++++++++++++++
  mm/Makefile        |  1 +
- mm/slub_wl_small.c | 83 ++++++++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 99 insertions(+)
- create mode 100644 mm/slub_wl_small.c
+ mm/slub_wl_small.c | 72 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 88 insertions(+)
 
 diff --git a/mm/Kconfig b/mm/Kconfig
-index 6dfc901c7..adafeb1c7 100644
+index 306e1b7..afc3acd 100644
 --- a/mm/Kconfig
 +++ b/mm/Kconfig
 @@ -205,6 +205,21 @@ config SLUB_TINY_INSTRUMENTATION
@@ -37,7 +36,7 @@ index 6dfc901c7..adafeb1c7 100644
  	bool "Allow slab caches to be merged"
  	default y
 diff --git a/mm/Makefile b/mm/Makefile
-index 8ad2ab082..3c6663ef3 100644
+index 8ad2ab0..3c6663e 100644
 --- a/mm/Makefile
 +++ b/mm/Makefile
 @@ -70,6 +70,7 @@ obj-y += init-mm.o
@@ -50,22 +49,11 @@ index 8ad2ab082..3c6663ef3 100644
  	obj-$(CONFIG_ADVISE_SYSCALLS)	+= madvise.o
 diff --git a/mm/slub_wl_small.c b/mm/slub_wl_small.c
 new file mode 100644
-index 000000000..884d0313f
+index 0000000..0675589
 --- /dev/null
 +++ b/mm/slub_wl_small.c
-@@ -0,0 +1,83 @@
+@@ -0,0 +1,72 @@
 +// SPDX-License-Identifier: GPL-2.0
-+/*
-+ * Immediate small-object allocation workload.
-+ *
-+ * Protocol:
-+ *   echo "imm <iterations> [size]" > /proc/slub_wl_small
-+ *
-+ * The default size is 64 bytes. Sizes are restricted to 1..128 bytes so
-+ * this remains a focused small-cache latency probe. Keep allocator
-+ * instrumentation disabled for timing images; elapsed_ns brackets only the
-+ * allocation/free loop.
-+ */
 +#include <linux/init.h>
 +#include <linux/kernel.h>
 +#include <linux/ktime.h>

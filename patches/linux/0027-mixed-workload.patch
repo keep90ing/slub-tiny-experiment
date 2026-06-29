@@ -1,17 +1,16 @@
-From 9c0b65520b550d6e423be2b7932c82596dab01de Mon Sep 17 00:00:00 2001
+From 32a417cc3d93fed760080b04337ae08dac39242b Mon Sep 17 00:00:00 2001
 From: Wilson Zeng <cheng20011202@gmail.com>
 Date: Sun, 14 Jun 2026 17:35:22 +0800
-Subject: [PATCH 3/5] mm: make mixed-lifetime workload intrusive and bucketed
+Subject: [PATCH 3/5] mm: add intrusive bucketed mixed-lifetime SLUB_TINY workload
 
 ---
- mm/Kconfig           |  12 +++
+ mm/Kconfig           |  12 ++++
  mm/Makefile          |   1 +
- mm/slub_wl_mixlife.c | 230 ++++++++++++++++++++++++++++++++++++++++
+ mm/slub_wl_mixlife.c | 230 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
  3 files changed, 243 insertions(+)
- create mode 100644 mm/slub_wl_mixlife.c
 
 diff --git a/mm/Kconfig b/mm/Kconfig
-index 365bed0b2..5f8c6206f 100644
+index 0596a83..0bf3a6d 100644
 --- a/mm/Kconfig
 +++ b/mm/Kconfig
 @@ -232,6 +232,18 @@ config SLUB_WL_CHURN
@@ -34,7 +33,7 @@ index 365bed0b2..5f8c6206f 100644
  	bool "Allow slab caches to be merged"
  	default y
 diff --git a/mm/Makefile b/mm/Makefile
-index 44e964918..d0ee644ae 100644
+index 44e9649..d0ee644 100644
 --- a/mm/Makefile
 +++ b/mm/Makefile
 @@ -72,6 +72,7 @@ obj-y += $(memory-hotplug-y)
@@ -47,7 +46,7 @@ index 44e964918..d0ee644ae 100644
  	obj-$(CONFIG_ADVISE_SYSCALLS)	+= madvise.o
 diff --git a/mm/slub_wl_mixlife.c b/mm/slub_wl_mixlife.c
 new file mode 100644
-index 000000000..de773a1f5
+index 0000000..c64208c
 --- /dev/null
 +++ b/mm/slub_wl_mixlife.c
 @@ -0,0 +1,230 @@

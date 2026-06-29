@@ -1,17 +1,18 @@
-From 3c7c72bb33dc30863cb68377fb94c6951447fbc2 Mon Sep 17 00:00:00 2001
+From 8ea721c78396fdc604a9d819035737aa0d6def77 Mon Sep 17 00:00:00 2001
 From: Wilson Zeng <cheng20011202@gmail.com>
 Date: Sun, 14 Jun 2026 17:31:29 +0800
 Subject: [PATCH 4/4] mm/slub: add optional raw fragmentation scan
 
 ---
- mm/Kconfig  | 16 ++++++++++++++++
- mm/slub.c   | 48 ++++++++++++++++++++++++++++++++++++++++++----
+ mm/Kconfig | 16 ++++++++++++++++
+ mm/slub.c  | 48 ++++++++++++++++++++++++++++++++++++++++++++----
  2 files changed, 60 insertions(+), 4 deletions(-)
 
 diff --git a/mm/Kconfig b/mm/Kconfig
+index 0266e35..306e1b7 100644
 --- a/mm/Kconfig
 +++ b/mm/Kconfig
-@@ -249,6 +249,22 @@
+@@ -249,6 +249,22 @@ config SLUB_TINY_INST_UTIL
  	  Enable this for page-efficiency, order and partial-slab studies.
  	  If unsure, say N.
  
@@ -34,16 +35,14 @@ diff --git a/mm/Kconfig b/mm/Kconfig
  config SLAB_FREELIST_RANDOM
  	bool "Randomize slab freelist"
  	depends on !SLUB_TINY
-
 diff --git a/mm/slub.c b/mm/slub.c
+index c1abcfe..8ddf82b 100644
 --- a/mm/slub.c
 +++ b/mm/slub.c
-@@ -3607,18 +3607,58 @@
- #ifdef CONFIG_SLUB_TINY_INST_UTIL
- static int slub_tiny_snapshot_show(struct seq_file *m, void *v)
+@@ -3609,14 +3609,54 @@ static int slub_tiny_snapshot_show(struct seq_file *m, void *v)
  {
  	struct kmem_cache *s;
-
+ 
 -	seq_puts(m, "cache_name object_size slot_size slab_order objs_per_slab live_objects live_slabs\n");
 +	seq_puts(m, "cache_name object_size slot_size slab_order objs_per_slab live_objects live_slabs frag_scan objects_total objects partial_slabs objects_partial free_slots_in_nonempty_partial partial_free_objects tracked_capacity_objects tracked_live_slab_pages\n");
  
@@ -99,7 +98,5 @@ diff --git a/mm/slub.c b/mm/slub.c
  	}
  	mutex_unlock(&slab_mutex);
  
- 	return 0;
- }
 -- 
 2.54.0

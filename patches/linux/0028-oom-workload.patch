@@ -1,17 +1,16 @@
-From 834cef068790a776f00e3798a933d563aaf831a8 Mon Sep 17 00:00:00 2001
+From d2b8e9eefd7a400b9dbbd108dd826c116015fda6 Mon Sep 17 00:00:00 2001
 From: Wilson Zeng <cheng20011202@gmail.com>
 Date: Sun, 14 Jun 2026 17:35:23 +0800
-Subject: [PATCH 4/5] mm: make SLUB_TINY capacity probe intrusive
+Subject: [PATCH 4/5] mm: add intrusive SLUB_TINY capacity probe
 
 ---
- mm/Kconfig       |  12 +++++
+ mm/Kconfig       |  12 +++++++
  mm/Makefile      |   1 +
- mm/slub_wl_oom.c | 148 ++++++++++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 161 insertions(+)
- create mode 100644 mm/slub_wl_oom.c
+ mm/slub_wl_oom.c | 135 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 148 insertions(+)
 
 diff --git a/mm/Kconfig b/mm/Kconfig
-index 5f8c6206f..9c848013d 100644
+index 0bf3a6d..fe72a7c 100644
 --- a/mm/Kconfig
 +++ b/mm/Kconfig
 @@ -244,6 +244,18 @@ config SLUB_WL_MIXLIFE
@@ -34,7 +33,7 @@ index 5f8c6206f..9c848013d 100644
  	bool "Allow slab caches to be merged"
  	default y
 diff --git a/mm/Makefile b/mm/Makefile
-index d0ee644ae..f56fd850d 100644
+index d0ee644..f56fd85 100644
 --- a/mm/Makefile
 +++ b/mm/Makefile
 @@ -73,6 +73,7 @@ obj-y += slub.o
@@ -47,24 +46,11 @@ index d0ee644ae..f56fd850d 100644
  	obj-$(CONFIG_ADVISE_SYSCALLS)	+= madvise.o
 diff --git a/mm/slub_wl_oom.c b/mm/slub_wl_oom.c
 new file mode 100644
-index 000000000..77f7bfd01
+index 0000000..6f13d41
 --- /dev/null
 +++ b/mm/slub_wl_oom.c
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,135 @@
 +// SPDX-License-Identifier: GPL-2.0
-+/*
-+ * End-to-end capacity headroom probe.
-+ *
-+ * Protocol:
-+ *   echo "fill <size>" > /proc/slub_wl_oom
-+ *   echo "drain" > /proc/slub_wl_oom
-+ *
-+ * The first machine word of every allocated object links to the previous
-+ * object. This removes the old 768 KiB pointer array from an 8 MiB capacity
-+ * measurement. Fill retains a fixed system headroom and keeps the intrusive
-+ * list until a separate drain command. This lets userspace snapshot and
-+ * release the capacity state without triggering the OOM killer.
-+ */
 +#include <linux/init.h>
 +#include <linux/kernel.h>
 +#include <linux/mm.h>

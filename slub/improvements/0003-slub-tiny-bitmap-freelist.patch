@@ -1,14 +1,14 @@
-From 47377ff80526f7b1c47b5316585ef614c16bb480 Mon Sep 17 00:00:00 2001
+From ba2558c842b5f4c820e488e23848769459b42a32 Mon Sep 17 00:00:00 2001
 From: Wilson Zeng <cheng20011202@gmail.com>
 Date: Tue, 16 Jun 2026 21:50:01 +0800
-Subject: [PATCH 5/6] mm/slub: replace SLUB_TINY pointer freelist with a bitmap
+Subject: [PATCH] mm/slub: replace SLUB_TINY pointer freelist with a bitmap
 
 ---
- mm/slub.c | 187 +++++++++++++++++++++++++++++++++++++++++++++++++----
+ mm/slub.c | 187 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++------
  1 file changed, 175 insertions(+), 12 deletions(-)
 
 diff --git a/mm/slub.c b/mm/slub.c
-index 915e4be0c608cbecbc6531b826ec5bf28a1205ff..b2889e6a723e95024b3324d8e6a0dfb3d24673f0 100644
+index 8ddf82b..4c85c11 100644
 --- a/mm/slub.c
 +++ b/mm/slub.c
 @@ -572,9 +572,119 @@ static inline unsigned int get_info_end(struct kmem_cache *s)
@@ -132,7 +132,7 @@ index 915e4be0c608cbecbc6531b826ec5bf28a1205ff..b2889e6a723e95024b3324d8e6a0dfb3
  }
  
  static inline struct kmem_cache_order_objects oo_make(unsigned int order,
-@@ -3776,7 +3886,25 @@ static struct slab *allocate_slab(struct kmem_cache *s, gfp_t flags, int node)
+@@ -3768,7 +3878,25 @@ static struct slab *allocate_slab(struct kmem_cache *s, gfp_t flags, int node)
  
  	shuffle = shuffle_freelist(s, slab, allow_spin);
  
@@ -159,7 +159,7 @@ index 915e4be0c608cbecbc6531b826ec5bf28a1205ff..b2889e6a723e95024b3324d8e6a0dfb3
  		start = fixup_red_left(s, start);
  		start = setup_object(s, start);
  		slab->freelist = start;
-@@ -3929,8 +4057,14 @@ static void *alloc_single_from_partial(struct kmem_cache *s,
+@@ -3921,8 +4049,14 @@ static void *alloc_single_from_partial(struct kmem_cache *s,
  	}
  #endif
  
@@ -176,7 +176,7 @@ index 915e4be0c608cbecbc6531b826ec5bf28a1205ff..b2889e6a723e95024b3324d8e6a0dfb3
  	slab->inuse++;
  
  	if (!alloc_debug_processing(s, slab, object, orig_size)) {
-@@ -3966,8 +4100,17 @@ static void *alloc_single_from_new_slab(struct kmem_cache *s, struct slab *slab,
+@@ -3958,8 +4092,17 @@ static void *alloc_single_from_new_slab(struct kmem_cache *s, struct slab *slab,
  		return NULL;
  	}
  
@@ -196,7 +196,7 @@ index 915e4be0c608cbecbc6531b826ec5bf28a1205ff..b2889e6a723e95024b3324d8e6a0dfb3
  	slab->inuse = 1;
  
  	if (!alloc_debug_processing(s, slab, object, orig_size)) {
-@@ -5684,12 +5827,27 @@ static noinline void free_to_partial_list(
+@@ -5676,12 +5819,27 @@ static noinline void free_to_partial_list(
  	spin_lock_irqsave(&n->list_lock, flags);
  
  	if (free_debug_processing(s, slab, head, tail, &cnt, addr, handle)) {
@@ -227,7 +227,7 @@ index 915e4be0c608cbecbc6531b826ec5bf28a1205ff..b2889e6a723e95024b3324d8e6a0dfb3
  
  		/*
  		 * If the slab is empty, and node's partial list is full,
-@@ -5699,7 +5857,7 @@ static noinline void free_to_partial_list(
+@@ -5691,7 +5849,7 @@ static noinline void free_to_partial_list(
  		if (slab->inuse == 0 && n->nr_partial >= s->min_partial)
  			slab_free = slab;
  
@@ -236,7 +236,7 @@ index 915e4be0c608cbecbc6531b826ec5bf28a1205ff..b2889e6a723e95024b3324d8e6a0dfb3
  			/* was on full list */
  			remove_full(s, n, slab);
  			if (!slab_free) {
-@@ -7797,13 +7955,18 @@ static void early_kmem_cache_node_alloc(int node)
+@@ -7789,13 +7947,18 @@ static void early_kmem_cache_node_alloc(int node)
  		pr_err("SLUB: Allocating a useless per node structure in order to be able to continue\n");
  	}
  
