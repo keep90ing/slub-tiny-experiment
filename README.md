@@ -33,10 +33,9 @@ metadata workload.
 ```text
 baseline     no allocator improvement patch
 order0       default SLUB_TINY `slub_max_order` to 0
-nomerge      make slab merging configurable for SLUB_TINY
 sheafbypass  bypass per-CPU sheaves for SLUB_TINY
-minpartial   set SLUB_TINY `min_partial` to 2
 bitmap       replace SLUB_TINY pointer freelist with a bitmap
+fullness     fullness buckets partial-slab index
 ```
  
 ## Dependencies 

@@ -25,7 +25,7 @@
 #   ./slub-build.sh prepare
 #       (re-extract the kernel so base patches 0021..0029 are present)
 #   ./slub-build.sh <variant> <workload> [profile]
-#       variant : baseline order0 nomerge sheafbypass minpartial bitmap fullness
+#       variant : baseline order0 sheafbypass bitmap fullness
 #       workload: small churn mixlife oom realvfs
 #       profile : metrics (default, workload-specific instrumentation)
 #                 perf (small only, instrumentation disabled)
@@ -49,20 +49,17 @@ variant_patches() {
 	case "$1" in
 	baseline)    echo "" ;;
 	order0)      echo "0001-slub-tiny-order0" ;;
-	nomerge)     echo "0002-slub-tiny-unmerge-kconfig" ;;
-	sheafbypass) echo "0003-slub-tiny-sheaf-bypass" ;;
-	minpartial)  echo "0004-slub-tiny-min-partial" ;;
-	bitmap)      echo "0005-slub-tiny-bitmap-freelist" ;;
-	fullness)    echo "0006-slub-tiny-fullness-buckets" ;;
+	sheafbypass) echo "0002-slub-tiny-sheaf-bypass" ;;
+	bitmap)      echo "0003-slub-tiny-bitmap-freelist" ;;
+	fullness)    echo "0004-slub-tiny-fullness-buckets" ;;
 	*) echo "UNKNOWN" ;;
 	esac
 }
 
 variant_config() {
 	case "$1" in
-	nomerge) echo "# CONFIG_SLAB_MERGE_DEFAULT is not set" ;;
 	# bitmap: gated directly on CONFIG_SLUB_TINY (always y here); applying the
-	# 0005 patch is sufficient, no extra Kconfig symbol needed.
+	# 0003 patch is sufficient, no extra Kconfig symbol needed.
 	*) : ;;
 	esac
 }
@@ -288,7 +285,7 @@ revert_patch_list() {
 
 cmd_prepare() {
 	echo "[prepare] installing base patches 0021..0029 and re-extracting kernel..."
-	verify_patch_syntax "improvement" "$IMP"/000[1-6]-*.patch
+	verify_patch_syntax "improvement" "$IMP"/000[1-4]-*.patch
 	sync_base_patches
 	make -C "$BR" linux-dirclean
 	# linux-rebuild re-extracts and applies the split board patch series.
