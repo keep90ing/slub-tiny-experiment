@@ -1,0 +1,96 @@
+From 49466dc79453587fa0a05568ee28bc6bbe430961 Mon Sep 17 00:00:00 2001
+From: Wilson Zeng <cheng20011202@gmail.com>
+Date: Tue, 26 May 2026 00:20:51 +0800
+Subject: [PATCH 3/3] mm/slub: add SLUB_TINY free-path probes
+
+---
+ mm/slub.c | 24 ++++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/mm/slub.c b/mm/slub.c
+index c5f5dffcd..16f9cced0 100644
+--- a/mm/slub.c
++++ b/mm/slub.c
+@@ -5443,6 +5443,10 @@ static noinline void free_to_partial_list(
+ 	unsigned long flags;
+ 	depot_stack_handle_t handle = 0;
+ 
++	slub_tiny_probe("free: free_to_partial_list cache=%s slab=%p cnt=%d inuse=%u objects=%u nr_partial=%lu min_partial=%lu\n",
++			s->name, slab, bulk_cnt, slab->inuse, slab->objects,
++			n->nr_partial, s->min_partial);
++
+ 	/*
+ 	 * We cannot use GFP_NOWAIT as there are callsites where waking up
+ 	 * kswapd could deadlock
+@@ -5492,6 +5496,8 @@ static noinline void free_to_partial_list(
+ 	spin_unlock_irqrestore(&n->list_lock, flags);
+ 
+ 	if (slab_free) {
++		slub_tiny_probe("free: discard empty slab cache=%s slab=%p\n",
++				s->name, slab_free);
+ 		stat(s, FREE_SLAB);
+ 		free_slab(s, slab_free);
+ 	}
+@@ -5517,6 +5523,8 @@ static void __slab_free(struct kmem_cache *s, struct slab *slab,
+ 	bool on_node_partial;
+ 
+ 	if (IS_ENABLED(CONFIG_SLUB_TINY) || kmem_cache_debug(s)) {
++		slub_tiny_probe("free: __slab_free cache=%s slab=%p cnt=%d caller=%pS\n",
++				s->name, slab, cnt, (void *)addr);
+ 		free_to_partial_list(s, slab, head, tail, cnt, addr);
+ 		return;
+ 	}
+@@ -5688,6 +5696,9 @@ __pcs_replace_full_main(struct kmem_cache *s, struct slub_percpu_sheaves *pcs,
+ 
+ 	/* Bootstrap or debug cache, back off */
+ 	if (unlikely(!cache_has_sheaves(s))) {
++		if (s->flags & SLAB_KMALLOC)
++			slub_tiny_probe("free fastpath disabled: cache=%s sheaf_capacity=%u\n",
++					s->name, s->sheaf_capacity);
+ 		local_unlock(&s->cpu_sheaves->lock);
+ 		return NULL;
+ 	}
+@@ -5819,6 +5830,10 @@ bool free_to_pcs(struct kmem_cache *s, void *object, bool allow_spin)
+ 
+ 	local_unlock(&s->cpu_sheaves->lock);
+ 
++	if (s->flags & SLAB_KMALLOC)
++		slub_tiny_probe("free fastpath HIT cache=%s sheaf_capacity=%u\n",
++				s->name, s->sheaf_capacity);
++
+ 	stat(s, FREE_FASTPATH);
+ 
+ 	return true;
+@@ -6197,6 +6212,9 @@ static __fastpath_inline
+ void slab_free(struct kmem_cache *s, struct slab *slab, void *object,
+ 	       unsigned long addr)
+ {
++	slub_tiny_probe("free: slab_free cache=%s object=%p slab=%p inuse=%u objects=%u\n",
++			s->name, object, slab, slab->inuse, slab->objects);
++
+ 	memcg_slab_free_hook(s, slab, &object, 1);
+ 	alloc_tagging_slab_free_hook(s, slab, &object, 1);
+ 
+@@ -6209,6 +6227,7 @@ void slab_free(struct kmem_cache *s, struct slab *slab, void *object,
+ 			return;
+ 	}
+ 
++	slub_tiny_probe("free: free_to_pcs failed no sheaves cache=%s\n", s->name);
+ 	__slab_free(s, slab, object, object, 1, addr);
+ 	stat(s, FREE_SLOWPATH);
+ }
+@@ -6518,6 +6537,11 @@ void kfree(const void *object)
+ 	}
+ 
+ 	s = slab->slab_cache;
++	slub_tiny_probe("free: kfree object=%p cache=%s\n", object, s->name);
++
++	if (s->flags & SLAB_KMALLOC)
++		slub_tiny_probe("kfree path entered: cache=%s\n", s->name);
++
+ 	slab_free(s, slab, x, _RET_IP_);
+ }
+ EXPORT_SYMBOL(kfree);
+-- 
+2.54.0
+
