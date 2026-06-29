@@ -1,0 +1,112 @@
+From 58d5f34af3d234f79cad69fd6381c7dfb3db7247 Mon Sep 17 00:00:00 2001
+From: Wilson Zeng <cheng20011202@gmail.com>
+Date: Tue, 26 May 2026 00:20:46 +0800
+Subject: [PATCH 2/3] mm/slub: add SLUB_TINY allocation-path probes
+
+---
+ mm/slub.c | 33 ++++++++++++++++++++++++++++++++-
+ 1 file changed, 32 insertions(+), 1 deletion(-)
+
+diff --git a/mm/slub.c b/mm/slub.c
+index 543bee197..c5f5dffcd 100644
+--- a/mm/slub.c
++++ b/mm/slub.c
+@@ -3660,6 +3660,9 @@ static void *alloc_single_from_partial(struct kmem_cache *s,
+ 
+ 	lockdep_assert_held(&n->list_lock);
+ 
++	slub_tiny_probe("alloc: alloc_single_from_partial cache=%s slab=%p inuse=%u objects=%u\n",
++			s->name, slab, slab->inuse, slab->objects);
++
+ #ifdef CONFIG_SLUB_DEBUG
+ 	if (s->flags & SLAB_CONSISTENCY_CHECKS) {
+ 		if (!validate_slab_ptr(slab)) {
+@@ -3700,6 +3703,9 @@ static void *alloc_single_from_new_slab(struct kmem_cache *s, struct slab *slab,
+ 	unsigned long flags;
+ 	void *object;
+ 
++	slub_tiny_probe("alloc: alloc_single_from_new_slab cache=%s slab=%p objects=%u\n",
++			s->name, slab, slab->objects);
++
+ 	if (!allow_spin && !spin_trylock_irqsave(&n->list_lock, flags)) {
+ 		/* Unlucky, discard newly allocated slab. */
+ 		free_new_slab_nolock(s, slab);
+@@ -3813,6 +3819,9 @@ static void *get_from_partial_node(struct kmem_cache *s,
+ 	if (!n || !n->nr_partial)
+ 		return NULL;
+ 
++	slub_tiny_probe("alloc: get_from_partial_node cache=%s nr_partial=%lu\n",
++			s->name, n->nr_partial);
++
+ 	if (gfpflags_allow_spinning(pc->flags))
+ 		spin_lock_irqsave(&n->list_lock, flags);
+ 	else if (!spin_trylock_irqsave(&n->list_lock, flags))
+@@ -4389,6 +4398,9 @@ static void *___slab_alloc(struct kmem_cache *s, gfp_t gfpflags, int node,
+ 
+ 	stat(s, ALLOC_SLOWPATH);
+ 
++	slub_tiny_probe("alloc: ___slab_alloc cache=%s size=%u node=%d caller=%pS\n",
++			s->name, orig_size, node, (void *)addr);
++
+ new_objects:
+ 
+ 	pc.flags = gfpflags;
+@@ -4576,6 +4588,11 @@ __pcs_replace_empty_main(struct kmem_cache *s, struct slub_percpu_sheaves *pcs,
+ 
+ 	/* Bootstrap or debug cache, back off */
+ 	if (unlikely(!cache_has_sheaves(s))) {
++		slub_tiny_probe("alloc: cache_has_sheaves=0 cache=%s sheaf_capacity=%u\n",
++				s->name, s->sheaf_capacity);
++		if (s->flags & SLAB_KMALLOC)
++			slub_tiny_probe("alloc fastpath disabled: cache=%s sheaf_capacity=%u\n",
++					s->name, s->sheaf_capacity);
+ 		local_unlock(&s->cpu_sheaves->lock);
+ 		return NULL;
+ 	}
+@@ -4745,6 +4762,10 @@ void *alloc_from_pcs(struct kmem_cache *s, gfp_t gfp, int node)
+ 
+ 	local_unlock(&s->cpu_sheaves->lock);
+ 
++	if (s->flags & SLAB_KMALLOC)
++		slub_tiny_probe("alloc fastpath HIT cache=%s sheaf_capacity=%u\n",
++				s->name, s->sheaf_capacity);
++
+ 	stat(s, ALLOC_FASTPATH);
+ 
+ 	return object;
+@@ -4851,14 +4872,20 @@ static __fastpath_inline void *slab_alloc_node(struct kmem_cache *s, struct list
+ 	if (unlikely(!s))
+ 		return NULL;
+ 
++	slub_tiny_probe("alloc: slab_alloc_node cache=%s size=%zu gfp=%#x\n",
++			s->name, orig_size, (unsigned int)gfpflags);
++
+ 	object = kfence_alloc(s, orig_size, gfpflags);
+ 	if (unlikely(object))
+ 		goto out;
+ 
+ 	object = alloc_from_pcs(s, gfpflags, node);
+ 
+-	if (!object)
++	if (!object) {
++		slub_tiny_probe("alloc: alloc_from_pcs failed no sheaves cache=%s\n",
++				s->name);
+ 		object = __slab_alloc_node(s, gfpflags, node, addr, orig_size);
++	}
+ 
+ 	maybe_wipe_obj_freeptr(s, object);
+ 	init = slab_want_init_on_alloc(gfpflags, s);
+@@ -5263,6 +5290,10 @@ void *__do_kmalloc_node(size_t size, kmem_buckets *b, gfp_t flags, int node,
+ 
+ 	s = kmalloc_slab(size, b, flags, caller);
+ 
++	if (s->flags & SLAB_KMALLOC)
++		slub_tiny_probe("kmalloc path entered: size=%zu cache=%s gfp=%#x\n",
++				size, s->name, flags);
++
+ 	ret = slab_alloc_node(s, NULL, flags, node, caller, size);
+ 	ret = kasan_kmalloc(s, ret, size, flags);
+ 	trace_kmalloc(caller, ret, size, s->size, flags, node);
+-- 
+2.54.0
+
