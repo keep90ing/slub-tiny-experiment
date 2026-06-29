@@ -88,16 +88,3 @@ Run the workload on the board:
 ```sh
 sh /run_slub_workload.sh <workload>
 ```
-
-## Analyze Captures
-
-Parse a captured log on the host:
-
-```sh
-python3 slub/scripts/analyze_slub_capture.py \
-    slub/logs/baseline__realvfs__metrics.log
-```
-
-The parser reports counter deltas, control-adjusted slab churn, size
-histograms, utilization snapshots, fragmentation metrics, buddy allocator
-state, small-workload `ns/pair`, and multi-run statistics.
