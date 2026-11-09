@@ -1,16 +1,32 @@
-From cb820404387e0e1f7579b14cc8e0b2dde30aaaa6 Mon Sep 17 00:00:00 2001
+From 6d76aca57fbab65ed41022ae66f53b89be6d080f Mon Sep 17 00:00:00 2001
 From: Wilson Zeng <cheng20011202@gmail.com>
 Date: Sun, 14 Jun 2026 17:35:20 +0800
 Subject: [PATCH 1/5] mm: add minimal small-pair SLUB_TINY workload
 
+Add /proc/slub_wl_small with three timing modes:
+
+  imm <iterations> [size]     time back-to-back kmalloc()/kfree() pairs
+                              with ktime and report the total.
+  cyc <iterations> [size]     time each kmem_cache_alloc()/kmem_cache_free()
+                              with the Cortex-M DWT cycle counter on a
+                              dedicated cache that holds one anchor object,
+                              and report per-call percentiles. Interrupts
+                              stay enabled and the calls use GFP_KERNEL.
+  cycoff <iterations> [size]  the same as cyc, with interrupts disabled
+                              around each timed call and GFP_ATOMIC. A
+                              reschedule that became pending is taken
+                              before each call, with interrupts enabled.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- mm/Kconfig         | 15 +++++++++++++++
- mm/Makefile        |  1 +
- mm/slub_wl_small.c | 72 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 88 insertions(+)
+ mm/Kconfig         |  15 ++
+ mm/Makefile        |   1 +
+ mm/slub_wl_small.c | 418 +++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 434 insertions(+)
+ create mode 100644 mm/slub_wl_small.c
 
 diff --git a/mm/Kconfig b/mm/Kconfig
-index 306e1b7..afc3acd 100644
+index 306e1b7c9..afc3acdcf 100644
 --- a/mm/Kconfig
 +++ b/mm/Kconfig
 @@ -205,6 +205,21 @@ config SLUB_TINY_INSTRUMENTATION
@@ -36,7 +52,7 @@ index 306e1b7..afc3acd 100644
  	bool "Allow slab caches to be merged"
  	default y
 diff --git a/mm/Makefile b/mm/Makefile
-index 8ad2ab0..3c6663e 100644
+index 8ad2ab082..3c6663ef3 100644
 --- a/mm/Makefile
 +++ b/mm/Makefile
 @@ -70,6 +70,7 @@ obj-y += init-mm.o
@@ -49,22 +65,187 @@ index 8ad2ab0..3c6663e 100644
  	obj-$(CONFIG_ADVISE_SYSCALLS)	+= madvise.o
 diff --git a/mm/slub_wl_small.c b/mm/slub_wl_small.c
 new file mode 100644
-index 0000000..0675589
+index 000000000..ac74806ec
 --- /dev/null
 +++ b/mm/slub_wl_small.c
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,418 @@
 +// SPDX-License-Identifier: GPL-2.0
++/*
++ * Small-object allocation workload for SLUB_TINY measurements.
++ *
++ * "imm <iterations> [size]" times back-to-back kmalloc() + kfree() pairs
++ * with ktime and reports the total.
++ *
++ * "cyc <iterations> [size]" times every kmem_cache_alloc() and
++ * kmem_cache_free() on its own with the Cortex-M DWT cycle counter and
++ * reports per-call percentiles. Interrupts stay enabled: a sample that an
++ * interrupt lands in only moves into the tail of its histogram, so the
++ * median is unaffected and the calls keep GFP_KERNEL.
++ *
++ * "cycoff <iterations> [size]" is the same measurement with interrupts
++ * disabled around each sample (local_irq_save() before the first counter
++ * read, local_irq_restore() after the second), so no maskable interrupt
++ * and no preemption lands inside a timed call. The calls run with
++ * interrupts disabled and therefore use GFP_ATOMIC. Interrupts that became
++ * pending run between samples, and a reschedule they request is taken
++ * there too, before the next sample (see small_irq_off()).
++ *
++ * Both modes use a dedicated cache per object size and hold one anchor
++ * object for the whole run, so every timed call works on the same partial
++ * slab and none reaches the page allocator.
++ */
 +#include <linux/init.h>
++#include <linux/io.h>
++#include <linux/irqflags.h>
 +#include <linux/kernel.h>
 +#include <linux/ktime.h>
++#include <linux/math64.h>
++#include <linux/mutex.h>
++#include <linux/preempt.h>
 +#include <linux/proc_fs.h>
 +#include <linux/slab.h>
 +#include <linux/string.h>
 +#include <linux/uaccess.h>
 +
++#include "slab.h"
++
 +#define SMALL_MAX_ITERS		(1U << 20)
 +#define SMALL_DEFAULT_SIZE	64U
 +#define SMALL_MAX_SIZE		128U
++
++/*
++ * One "cyc"/"cycoff" iteration costs a few thousand cycles, so this bound
++ * keeps a run well inside one wrap of the 32-bit cycle counter (~25 s at
++ * 168 MHz).
++ */
++#define SMALL_CYC_MAX_ITERS	(1U << 19)
++
++/* Histograms: 4-cycle bins up to 4095 cycles per call, 1-cycle bins for
++ * the empty sample (the fixed cost of reading the counter twice).
++ */
++#define SMALL_CALL_SHIFT	2
++#define SMALL_CALL_BINS		1024
++#define SMALL_EMPTY_BINS	256
++
++#ifdef CONFIG_CPU_V7M
++#define SMALL_DEMCR			IOMEM(0xe000edfc)
++#define SMALL_DEMCR_TRCENA		BIT(24)
++#define SMALL_DWT_CTRL			IOMEM(0xe0001000)
++#define SMALL_DWT_CTRL_CYCCNTENA	BIT(0)
++#define SMALL_DWT_CTRL_NOCYCCNT		BIT(25)
++#define SMALL_DWT_CYCCNT		IOMEM(0xe0001004)
++
++static __always_inline u32 small_cycles(void)
++{
++	u32 cycles;
++
++	/* Keep the timed call between the two counter reads. */
++	barrier();
++	cycles = readl_relaxed(SMALL_DWT_CYCCNT);
++	barrier();
++	return cycles;
++}
++
++static int small_cycles_enable(void)
++{
++	u32 ctrl;
++
++	writel_relaxed(readl_relaxed(SMALL_DEMCR) | SMALL_DEMCR_TRCENA,
++		       SMALL_DEMCR);
++	ctrl = readl_relaxed(SMALL_DWT_CTRL);
++	if (ctrl & SMALL_DWT_CTRL_NOCYCCNT)
++		return -ENODEV;
++	writel_relaxed(ctrl | SMALL_DWT_CTRL_CYCCNTENA, SMALL_DWT_CTRL);
++	/* A running counter advances between two back-to-back reads. */
++	if (small_cycles() == small_cycles())
++		return -EIO;
++	return 0;
++}
++#else
++static inline u32 small_cycles(void)
++{
++	return 0;
++}
++
++static int small_cycles_enable(void)
++{
++	return -EOPNOTSUPP;
++}
++#endif
++
++struct small_hist {
++	u32 *bins;
++	unsigned int nbins;
++	unsigned int shift;
++	u32 count;
++	u32 min;
++	u32 over;
++};
++
++static int small_hist_init(struct small_hist *hist, unsigned int nbins,
++			   unsigned int shift)
++{
++	hist->bins = kcalloc(nbins, sizeof(*hist->bins), GFP_KERNEL);
++	if (!hist->bins)
++		return -ENOMEM;
++	hist->nbins = nbins;
++	hist->shift = shift;
++	hist->count = 0;
++	hist->min = U32_MAX;
++	hist->over = 0;
++	return 0;
++}
++
++static void small_hist_add(struct small_hist *hist, u32 cycles)
++{
++	u32 bin = cycles >> hist->shift;
++
++	hist->count++;
++	if (cycles < hist->min)
++		hist->min = cycles;
++	if (bin < hist->nbins)
++		hist->bins[bin]++;
++	else
++		hist->over++;
++}
++
++/*
++ * Lower edge of the bin holding the pct-th percentile sample, or U32_MAX
++ * when that sample lies past the last bin.
++ */
++static u32 small_hist_pct(const struct small_hist *hist, unsigned int pct)
++{
++	u64 rank = max_t(u64, 1, div_u64((u64)hist->count * pct + 99, 100));
++	u64 seen = 0;
++	unsigned int bin;
++
++	for (bin = 0; bin < hist->nbins; bin++) {
++		seen += hist->bins[bin];
++		if (seen >= rank)
++			return bin << hist->shift;
++	}
++	return U32_MAX;
++}
++
++static DEFINE_MUTEX(small_lock);
++static struct kmem_cache *small_caches[SMALL_MAX_SIZE + 1];
++
++/* One dedicated, unmerged cache per object size, kept for the whole boot. */
++static struct kmem_cache *small_cache(unsigned int size)
++{
++	char *name;
++
++	if (small_caches[size])
++		return small_caches[size];
++	name = kasprintf(GFP_KERNEL, "slub_wl_small-%u", size);
++	if (!name)
++		return NULL;
++	small_caches[size] = kmem_cache_create(name, size, 0, SLAB_NO_MERGE,
++					       NULL);
++	if (!small_caches[size])
++		kfree(name);
++	return small_caches[size];
++}
 +
 +static unsigned int run_immediate(unsigned int iterations, unsigned int size)
 +{
@@ -80,30 +261,11 @@ index 0000000..0675589
 +	return i;
 +}
 +
-+static ssize_t slub_wl_small_write(struct file *file,
-+				   const char __user *buffer,
-+				   size_t length, loff_t *position)
++static void run_pairs(unsigned int iterations, unsigned int size)
 +{
-+	char input[48];
-+	char verb[8];
-+	unsigned int iterations = 0;
-+	unsigned int size = SMALL_DEFAULT_SIZE;
 +	unsigned int completed;
 +	u64 start_ns;
 +	u64 end_ns;
-+	int parsed;
-+
-+	if (!length || length >= sizeof(input))
-+		return -EINVAL;
-+	if (copy_from_user(input, buffer, length))
-+		return -EFAULT;
-+	input[length] = '\0';
-+
-+	parsed = sscanf(input, "%7s %u %u", verb, &iterations, &size);
-+	if (parsed < 2 || strcmp(verb, "imm") ||
-+	    !iterations || iterations > SMALL_MAX_ITERS ||
-+	    !size || size > SMALL_MAX_SIZE)
-+		return -EINVAL;
 +
 +	start_ns = ktime_get_ns();
 +	completed = run_immediate(iterations, size);
@@ -112,7 +274,207 @@ index 0000000..0675589
 +	pr_info("slub_wl_small: size=%u requested=%u completed=%u elapsed_ns=%llu\n",
 +		size, iterations, completed,
 +		(unsigned long long)(end_ns - start_ns));
-+	return length;
++}
++
++struct small_cyc {
++	struct kmem_cache *cache;
++	struct slab *anchor_slab;
++	struct small_hist empty, alloc, release;
++	unsigned int foreign;
++};
++
++/*
++ * Disable interrupts for one "cycoff" sample. The preemption points inside
++ * the timed call then run with interrupts disabled and cannot reschedule,
++ * and on ARMv7-M a return from interrupt into a system call does not
++ * reschedule either. A reschedule requested by an interrupt would thus stay
++ * pending for the rest of the run, and every preemption point in each later
++ * timed call would call preempt_schedule() for nothing. Take a pending
++ * reschedule here, while interrupts are still enabled, so that it happens
++ * outside the timed window.
++ */
++static __always_inline unsigned long small_irq_off(void)
++{
++	unsigned long flags;
++
++	preempt_check_resched();
++	local_irq_save(flags);
++	return flags;
++}
++
++/*
++ * With irqoff, interrupts are disabled before the first counter read and
++ * restored after the second, so the timed window holds only the call.
++ * irqoff is a constant at each call site: each mode gets its own copy of
++ * the loop with gfp as an immediate, and the timed windows of the two
++ * modes hold the same instructions.
++ */
++static __always_inline unsigned int small_cyc_loop(struct small_cyc *cyc,
++						   unsigned int iterations,
++						   const bool irqoff)
++{
++	const gfp_t gfp = irqoff ? GFP_ATOMIC : GFP_KERNEL;
++	unsigned long flags = 0;
++	unsigned int completed;
++	void *object;
++	u32 t0, t1;
++
++	for (completed = 0; completed < iterations; completed++) {
++		if (irqoff)
++			flags = small_irq_off();
++		t0 = small_cycles();
++		t1 = small_cycles();
++		if (irqoff)
++			local_irq_restore(flags);
++		small_hist_add(&cyc->empty, t1 - t0);
++
++		if (irqoff)
++			flags = small_irq_off();
++		t0 = small_cycles();
++		object = kmem_cache_alloc(cyc->cache, gfp);
++		t1 = small_cycles();
++		if (irqoff)
++			local_irq_restore(flags);
++		if (!object)
++			break;
++		small_hist_add(&cyc->alloc, t1 - t0);
++		if (virt_to_slab(object) != cyc->anchor_slab)
++			cyc->foreign++;
++
++		if (irqoff)
++			flags = small_irq_off();
++		t0 = small_cycles();
++		kmem_cache_free(cyc->cache, object);
++		t1 = small_cycles();
++		if (irqoff)
++			local_irq_restore(flags);
++		small_hist_add(&cyc->release, t1 - t0);
++	}
++	return completed;
++}
++
++static int run_cycles_locked(unsigned int iterations, unsigned int size,
++			     bool irqoff)
++{
++	struct small_cyc cyc = {};
++	unsigned int inuse_before, inuse_after;
++	unsigned int completed;
++	u32 cycle_start, cycles;
++	u64 ns_start, elapsed_ns;
++	u32 clk_khz = 0;
++	void *anchor;
++	int ret;
++
++	ret = small_cycles_enable();
++	if (ret) {
++		pr_warn("slub_wl_small: DWT cycle counter unavailable (%d)\n",
++			ret);
++		return ret;
++	}
++	cyc.cache = small_cache(size);
++	if (!cyc.cache)
++		return -ENOMEM;
++	ret = small_hist_init(&cyc.empty, SMALL_EMPTY_BINS, 0);
++	if (!ret)
++		ret = small_hist_init(&cyc.alloc, SMALL_CALL_BINS,
++				      SMALL_CALL_SHIFT);
++	if (!ret)
++		ret = small_hist_init(&cyc.release, SMALL_CALL_BINS,
++				      SMALL_CALL_SHIFT);
++	if (ret)
++		goto out;
++
++	/*
++	 * SLUB_TINY frees a slab as soon as it is empty. The anchor keeps its
++	 * slab partial, so each timed allocation is taken from that slab and
++	 * each free returns to it. It is allocated outside the timed loop, so
++	 * it uses GFP_KERNEL in both modes.
++	 */
++	anchor = kmem_cache_alloc(cyc.cache, GFP_KERNEL);
++	if (!anchor) {
++		ret = -ENOMEM;
++		goto out;
++	}
++	cyc.anchor_slab = virt_to_slab(anchor);
++	inuse_before = cyc.anchor_slab->inuse;
++
++	ns_start = ktime_get_ns();
++	cycle_start = small_cycles();
++	if (irqoff)
++		completed = small_cyc_loop(&cyc, iterations, true);
++	else
++		completed = small_cyc_loop(&cyc, iterations, false);
++	cycles = small_cycles() - cycle_start;
++	elapsed_ns = ktime_get_ns() - ns_start;
++	inuse_after = cyc.anchor_slab->inuse;
++	kmem_cache_free(cyc.cache, anchor);
++
++	/* Cross-check the core clock while the counter cannot have wrapped. */
++	if (elapsed_ns && elapsed_ns < 20ULL * NSEC_PER_SEC)
++		clk_khz = div64_u64((u64)cycles * NSEC_PER_MSEC, elapsed_ns);
++
++	pr_info("slub_wl_small: cyc size=%u irq=%s requested=%u completed=%u clk_khz=%u foreign=%u anchor_inuse=%u/%u bin=%u empty=%u/%u/%u/%u alloc=%u/%u/%u/%u free=%u/%u/%u/%u\n",
++		size, irqoff ? "off" : "on", iterations, completed, clk_khz,
++		cyc.foreign, inuse_before, inuse_after,
++		1U << SMALL_CALL_SHIFT,
++		cyc.empty.min, small_hist_pct(&cyc.empty, 50),
++		small_hist_pct(&cyc.empty, 90), cyc.empty.over,
++		cyc.alloc.min, small_hist_pct(&cyc.alloc, 50),
++		small_hist_pct(&cyc.alloc, 90), cyc.alloc.over,
++		cyc.release.min, small_hist_pct(&cyc.release, 50),
++		small_hist_pct(&cyc.release, 90), cyc.release.over);
++out:
++	kfree(cyc.release.bins);
++	kfree(cyc.alloc.bins);
++	kfree(cyc.empty.bins);
++	return ret;
++}
++
++static int run_cycles(unsigned int iterations, unsigned int size,
++		      bool irqoff)
++{
++	int ret;
++
++	mutex_lock(&small_lock);
++	ret = run_cycles_locked(iterations, size, irqoff);
++	mutex_unlock(&small_lock);
++	return ret;
++}
++
++static ssize_t slub_wl_small_write(struct file *file,
++				   const char __user *buffer,
++				   size_t length, loff_t *position)
++{
++	char input[48];
++	char verb[8];
++	unsigned int iterations = 0;
++	unsigned int size = SMALL_DEFAULT_SIZE;
++	int parsed;
++	int ret;
++
++	if (!length || length >= sizeof(input))
++		return -EINVAL;
++	if (copy_from_user(input, buffer, length))
++		return -EFAULT;
++	input[length] = '\0';
++
++	parsed = sscanf(input, "%7s %u %u", verb, &iterations, &size);
++	if (parsed < 2 || !iterations || !size || size > SMALL_MAX_SIZE)
++		return -EINVAL;
++
++	if (!strcmp(verb, "imm")) {
++		if (iterations > SMALL_MAX_ITERS)
++			return -EINVAL;
++		run_pairs(iterations, size);
++		return length;
++	}
++	if (!strcmp(verb, "cyc") || !strcmp(verb, "cycoff")) {
++		if (iterations > SMALL_CYC_MAX_ITERS)
++			return -EINVAL;
++		ret = run_cycles(iterations, size, !strcmp(verb, "cycoff"));
++		return ret ? ret : length;
++	}
++	return -EINVAL;
 +}
 +
 +static const struct proc_ops slub_wl_small_ops = {
@@ -126,4 +488,5 @@ index 0000000..0675589
 +}
 +late_initcall(slub_wl_small_init);
 -- 
-2.54.0
+2.55.0
+

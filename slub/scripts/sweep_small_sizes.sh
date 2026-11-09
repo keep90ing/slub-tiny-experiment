@@ -11,13 +11,22 @@
 #
 # Run on the serial console (use a perf image, instrumentation disabled):
 #   sh /sweep_small_sizes.sh [iterations] [rounds] [sizes...]
+#   MODE=cyc sh /sweep_small_sizes.sh [iterations] [rounds] [sizes...]
+#   MODE=cycoff sh /sweep_small_sizes.sh [iterations] [rounds] [sizes...]
 # Defaults: iterations=500000 rounds=10 sizes="32 64 128".
+# MODE=imm (default) times kmalloc()+kfree() pairs with ktime. MODE=cyc
+# times each kmem_cache_alloc() and kmem_cache_free() with the DWT cycle
+# counter on a dedicated cache, interrupts enabled and GFP_KERNEL.
+# MODE=cycoff is the same with interrupts disabled around each timed call
+# and GFP_ATOMIC. Both cycle modes take iterations <= 524288; see
+# mm/slub_wl_small.c.
 # One warm-up pass per size is emitted first and must be discarded by the
 # host parser (it is the first slub_wl_small line for each size). Capture
 # with picocom -g and analyse with:
 #   python3 slub/scripts/analyze_slub_capture.py --timing-only run.log
 
 PROC=/proc/slub_wl_small
+MODE="${MODE:-imm}"
 ITERS="${1:-500000}"
 ROUNDS="${2:-10}"
 if [ "$#" -gt 2 ]; then
@@ -27,6 +36,13 @@ else
 	SIZES="32 64 128"
 fi
 
+case "$MODE" in
+	imm|cyc|cycoff) ;;
+	*)
+		echo "MODE must be imm, cyc or cycoff"
+		exit 2
+		;;
+esac
 case "$ITERS$ROUNDS" in
 	*[!0-9]*)
 		echo "iterations and rounds must be positive integers"
@@ -47,14 +63,14 @@ cat /proc/version
 echo "uptime: $(cat /proc/uptime 2>/dev/null)"
 echo "===END KERNEL ID==="
 
-echo "===SWEEP iters=$ITERS rounds=$ROUNDS sizes=$SIZES==="
+echo "===SWEEP mode=$MODE iters=$ITERS rounds=$ROUNDS sizes=$SIZES==="
 for s in $SIZES; do
 	echo "===SIZE $s WARMUP==="
-	echo "imm $ITERS $s" > "$PROC"
+	echo "$MODE $ITERS $s" > "$PROC"
 	echo "===SIZE $s MEASURED==="
 	n=1
 	while [ "$n" -le "$ROUNDS" ]; do
-		echo "imm $ITERS $s" > "$PROC"
+		echo "$MODE $ITERS $s" > "$PROC"
 		n=$((n + 1))
 	done
 done
